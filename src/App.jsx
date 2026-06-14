@@ -21,6 +21,30 @@ const docTypeLabels = {
   autre: "Autre",
 };
 
+const craStatusLabels = {
+  draft: "Brouillon",
+  submitted: "Soumis",
+  approved: "Validé",
+  rejected: "Refusé",
+};
+
+const commentVisibilityLabels = {
+  admin_only: "Admin uniquement",
+  both: "Admin + consultant",
+};
+
+const COMPANY_INVOICE_INFO = {
+  name: "LRN PORTAGE",
+  legalName: "LRN PORTAGE",
+  address: "18 RUE DE LA BRUYERE, 78300 POISSY",
+  phone: "06.34.38.30.78",
+  email: "lrninfo78@gmail.com",
+  siret: "104 387 105 00018",
+  vatNumber: "FR28104387105",
+  iban: "FR42 3000 2023 3600 0024 8787 T61",
+  bic: "CRLYFRPP",
+};
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [ready, setReady] = useState(false);
@@ -223,13 +247,19 @@ function AdminDashboard({ session, profile, message, signOut }) {
   const [activeTab, setActiveTab] = useState("overview");
   const [profiles, setProfiles] = useState([]);
   const [documents, setDocuments] = useState([]);
+  const [cras, setCras] = useState([]);
+  const [invoices, setInvoices] = useState([]);
   const [loadingProfiles, setLoadingProfiles] = useState(false);
   const [loadingDocuments, setLoadingDocuments] = useState(false);
+  const [loadingCras, setLoadingCras] = useState(false);
+  const [loadingInvoices, setLoadingInvoices] = useState(false);
   const [adminMessage, setAdminMessage] = useState("");
 
   useEffect(() => {
     loadProfiles();
     loadDocuments();
+    loadCras();
+    loadInvoices();
   }, []);
 
   async function loadProfiles() {
@@ -270,6 +300,45 @@ function AdminDashboard({ session, profile, message, signOut }) {
     setLoadingDocuments(false);
   }
 
+
+  async function loadCras() {
+    setLoadingCras(true);
+    setAdminMessage("");
+
+    const { data, error } = await supabase
+      .from("cra")
+      .select("id,consultant_id,client_id,month,worked_days,consultant_comment,client_comment,client_comment_visibility,status,created_at,updated_at,submitted_at,validated_at,consultant:consultant_id(email,full_name,role),client:client_id(email,full_name,role)")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      setAdminMessage("Impossible de charger les CRA. Lance le script supabase-cra.sql.");
+      setLoadingCras(false);
+      return;
+    }
+
+    setCras(data || []);
+    setLoadingCras(false);
+  }
+
+  async function loadInvoices() {
+    setLoadingInvoices(true);
+    setAdminMessage("");
+
+    const { data, error } = await supabase
+      .from("invoices")
+      .select("id,cra_id,invoice_number,data,subtotal,vat_amount,total,created_at")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      setAdminMessage("Impossible de charger les factures. Lance le script supabase-invoices.sql.");
+      setLoadingInvoices(false);
+      return;
+    }
+
+    setInvoices(data || []);
+    setLoadingInvoices(false);
+  }
+
   async function updateRole(id, newRole) {
     const { error } = await supabase
       .from("profiles")
@@ -291,8 +360,11 @@ function AdminDashboard({ session, profile, message, signOut }) {
       admins: profiles.filter((p) => p.role === "admin").length,
       total: profiles.length,
       documents: documents.length,
+      craPending: cras.filter((cra) => cra.status === "submitted").length,
+      craTotal: cras.length,
+      invoices: invoices.length,
     };
-  }, [profiles, documents]);
+  }, [profiles, documents, cras, invoices]);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -304,12 +376,14 @@ function AdminDashboard({ session, profile, message, signOut }) {
 
         <Hero role="Administrateur" title={`Bonjour, ${profile?.full_name || session.user.email}`} />
 
-        <div className="mt-8 grid gap-5 md:grid-cols-5">
+        <div className="mt-8 grid gap-5 md:grid-cols-7">
           <StatCard title="Utilisateurs" value={stats.total} text="Tous les comptes créés" />
           <StatCard title="Consultants" value={stats.consultants} text="Profils consultants" />
           <StatCard title="Clients" value={stats.clients} text="Comptes entreprises" />
           <StatCard title="Admins" value={stats.admins} text="Administrateurs" />
           <StatCard title="Documents" value={stats.documents} text="Documents déposés" />
+          <StatCard title="CRA à valider" value={stats.craPending} text="Soumis par consultants" />
+          <StatCard title="Factures" value={stats.invoices} text="Générées depuis CRA" />
         </div>
 
         <div className="mt-8 flex flex-wrap gap-3">
@@ -317,6 +391,7 @@ function AdminDashboard({ session, profile, message, signOut }) {
           <TabButton active={activeTab === "profiles"} onClick={() => setActiveTab("profiles")}>Gestion des profils</TabButton>
           <TabButton active={activeTab === "documents"} onClick={() => setActiveTab("documents")}>Documents</TabButton>
           <TabButton active={activeTab === "cra"} onClick={() => setActiveTab("cra")}>CRA</TabButton>
+          <TabButton active={activeTab === "invoices"} onClick={() => setActiveTab("invoices")}>Factures</TabButton>
         </div>
 
         {activeTab === "overview" && (
@@ -324,8 +399,9 @@ function AdminDashboard({ session, profile, message, signOut }) {
             <Panel title="Actions rapides">
               <ActionButton label="Gérer les profils" onClick={() => setActiveTab("profiles")} />
               <ActionButton label="Déposer / gérer les documents" onClick={() => setActiveTab("documents")} />
-              <ActionButton label="Préparer module CRA" onClick={() => setActiveTab("cra")} />
-              <ActionButton label="Rafraîchir les données" onClick={() => { loadProfiles(); loadDocuments(); }} />
+              <ActionButton label="Gérer les CRA" onClick={() => setActiveTab("cra")} />
+              <ActionButton label="Générer une facture" onClick={() => setActiveTab("invoices")} />
+              <ActionButton label="Rafraîchir les données" onClick={() => { loadProfiles(); loadDocuments(); loadCras(); loadInvoices(); }} />
             </Panel>
 
             <Panel title="Informations admin">
@@ -357,9 +433,13 @@ function AdminDashboard({ session, profile, message, signOut }) {
         )}
 
         {activeTab === "cra" && (
-          <ComingSoon
-            title="Module CRA"
-            text="Prochaine étape : déclaration des jours travaillés, soumission et validation côté client/admin."
+          <CraManager
+            currentProfile={profile}
+            profiles={profiles}
+            cras={cras}
+            loading={loadingCras}
+            onRefresh={loadCras}
+            mode="admin"
           />
         )}
       </main>
@@ -714,11 +794,14 @@ function UserDashboard({ session, profile, message, signOut }) {
   const role = profile?.role || "consultant";
   const [activeTab, setActiveTab] = useState("overview");
   const [documents, setDocuments] = useState([]);
+  const [cras, setCras] = useState([]);
   const [loadingDocuments, setLoadingDocuments] = useState(false);
+  const [loadingCras, setLoadingCras] = useState(false);
   const [userMessage, setUserMessage] = useState("");
 
   useEffect(() => {
     loadDocuments();
+    loadCras();
   }, [profile]);
 
   async function loadDocuments() {
@@ -742,16 +825,45 @@ function UserDashboard({ session, profile, message, signOut }) {
     setLoadingDocuments(false);
   }
 
+
+  async function loadCras() {
+    if (!profile?.id) return;
+    setLoadingCras(true);
+    setUserMessage("");
+
+    let query = supabase
+      .from("cra")
+      .select("id,consultant_id,client_id,month,worked_days,consultant_comment,client_comment,client_comment_visibility,status,created_at,updated_at,submitted_at,validated_at,consultant:consultant_id(email,full_name,role),client:client_id(email,full_name,role)")
+      .order("created_at", { ascending: false });
+
+    if (role === "client") {
+      query = query.eq("client_id", profile.id);
+    } else {
+      query = query.eq("consultant_id", profile.id);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      setUserMessage("Impossible de charger les CRA. Vérifie le script supabase-cra.sql.");
+      setLoadingCras(false);
+      return;
+    }
+
+    setCras(data || []);
+    setLoadingCras(false);
+  }
+
   const cards = role === "client"
     ? [
         ["Consultants", "0", "Voir les profils affectés"],
-        ["CRA en attente", "0", "Valider l’activité mensuelle"],
+        ["CRA en attente", cras.filter((cra) => cra.status === "submitted").length, "Valider l’activité mensuelle"],
         ["Documents", documents.length, "Contrats et factures"],
         ["Demandes", "0", "Demander un renfort opérationnel"],
       ]
     : [
         ["Mission active", "À définir", "Consulter les informations de mission"],
-        ["CRA du mois", "À remplir", "Déclarer les jours travaillés"],
+        ["CRA du mois", cras.find((cra) => cra.status === "submitted") ? "Soumis" : "À remplir", "Déclarer les jours travaillés"],
         ["Documents", documents.length, "Contrats, fiches de paie et justificatifs"],
         ["Frais", "À saisir", "IK, paniers repas et téléphone"],
       ];
@@ -776,6 +888,7 @@ function UserDashboard({ session, profile, message, signOut }) {
           <TabButton active={activeTab === "overview"} onClick={() => setActiveTab("overview")}>Vue générale</TabButton>
           <TabButton active={activeTab === "documents"} onClick={() => setActiveTab("documents")}>Mes documents</TabButton>
           <TabButton active={activeTab === "cra"} onClick={() => setActiveTab("cra")}>CRA</TabButton>
+          <TabButton active={activeTab === "invoices"} onClick={() => setActiveTab("invoices")}>Factures</TabButton>
           <TabButton active={activeTab === "frais"} onClick={() => setActiveTab("frais")}>Frais</TabButton>
         </div>
 
@@ -807,7 +920,13 @@ function UserDashboard({ session, profile, message, signOut }) {
         )}
 
         {activeTab === "cra" && (
-          <ComingSoon title="Module CRA" text="Prochaine étape : formulaire CRA mensuel, brouillon, soumission et validation." />
+          <CraManager
+            currentProfile={profile}
+            cras={cras}
+            loading={loadingCras}
+            onRefresh={loadCras}
+            mode={role === "client" ? "client" : "consultant"}
+          />
         )}
 
         {activeTab === "frais" && (
@@ -817,6 +936,736 @@ function UserDashboard({ session, profile, message, signOut }) {
     </div>
   );
 }
+
+
+function CraManager({ currentProfile, profiles = [], cras, loading, onRefresh, mode }) {
+  const isAdmin = mode === "admin";
+  const isClient = mode === "client";
+  const isConsultant = mode === "consultant";
+
+  const consultants = profiles.filter((profile) => profile.role === "consultant");
+  const clients = profiles.filter((profile) => profile.role === "client");
+
+  const [form, setForm] = useState({
+    consultantId: currentProfile?.id || "",
+    clientId: "",
+    month: new Date().toISOString().slice(0, 7),
+    workedDays: 20,
+    consultantComment: "",
+  });
+  const [actionForm, setActionForm] = useState({ comment: "", visibility: "both" });
+  const [saving, setSaving] = useState(false);
+  const [craMessage, setCraMessage] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [activeActionId, setActiveActionId] = useState(null);
+
+  useEffect(() => {
+    if (isConsultant && currentProfile?.id) {
+      setForm((prev) => ({ ...prev, consultantId: currentProfile.id }));
+    }
+  }, [currentProfile, isConsultant]);
+
+  async function submitCra(e) {
+    e.preventDefault();
+    setSaving(true);
+    setCraMessage("");
+
+    try {
+      const consultantId = isAdmin ? form.consultantId : currentProfile.id;
+
+      if (!consultantId) throw new Error("Aucun consultant sélectionné.");
+      if (!form.month) throw new Error("Sélectionne le mois du CRA.");
+      if (form.workedDays === "" || Number.isNaN(Number(form.workedDays))) throw new Error("Indique le nombre de jours travaillés.");
+
+      const payload = {
+        consultant_id: consultantId,
+        client_id: form.clientId || null,
+        month: `${form.month}-01`,
+        worked_days: Number(form.workedDays),
+        consultant_comment: form.consultantComment?.trim() || null,
+        status: "submitted",
+        submitted_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase.from("cra").insert(payload);
+      if (error) throw error;
+
+      setCraMessage("CRA soumis avec succès.");
+      setForm((prev) => ({ ...prev, workedDays: 20, consultantComment: "" }));
+      await onRefresh();
+    } catch (error) {
+      setCraMessage(error.message || "Impossible de soumettre le CRA.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function decideCra(cra, status) {
+    setSaving(true);
+    setCraMessage("");
+
+    try {
+      const payload = {
+        status,
+        validated_by: currentProfile.id,
+        validated_at: new Date().toISOString(),
+        client_comment: actionForm.comment?.trim() || null,
+        client_comment_visibility: actionForm.visibility || "both",
+      };
+
+      const { error } = await supabase.from("cra").update(payload).eq("id", cra.id);
+      if (error) throw error;
+
+      setCraMessage(status === "approved" ? "CRA validé." : "CRA refusé.");
+      setActionForm({ comment: "", visibility: "both" });
+      setActiveActionId(null);
+      await onRefresh();
+    } catch (error) {
+      setCraMessage(error.message || "Action impossible sur le CRA.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const visibleCras = cras.filter((cra) => filter === "all" ? true : cra.status === filter);
+
+  return (
+    <section className={isConsultant ? "mt-6 grid gap-6 lg:grid-cols-[420px_1fr]" : "mt-6"}>
+      {isConsultant && (
+        <div className="rounded-[2rem] bg-white p-6 shadow-sm">
+          <h2 className="text-2xl font-black text-slate-950">Soumettre un CRA</h2>
+          <p className="mt-2 text-sm text-slate-600">Déclare les jours travaillés du mois.</p>
+
+          <form className="mt-6 space-y-4" onSubmit={submitCra}>
+            <label className="block">
+              <span className="mb-2 block text-sm font-semibold text-slate-700">Mois</span>
+              <input type="month" value={form.month} onChange={(e) => setForm({ ...form, month: e.target.value })} className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700" />
+            </label>
+
+            <Input label="Jours travaillés" type="number" value={form.workedDays} onChange={(v) => setForm({ ...form, workedDays: v })} />
+
+            <label className="block">
+              <span className="mb-2 block text-sm font-semibold text-slate-700">Commentaire consultant facultatif</span>
+              <textarea value={form.consultantComment} onChange={(e) => setForm({ ...form, consultantComment: e.target.value })} className="min-h-28 w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700" placeholder="Ex : activité du mois, absence, précision..." />
+            </label>
+
+            {craMessage && <Alert>{craMessage}</Alert>}
+
+            <button disabled={saving} className="min-h-12 w-full rounded-full bg-blue-700 px-6 py-3 font-semibold text-white hover:bg-blue-800 disabled:opacity-60">
+              {saving ? "Envoi..." : "Soumettre le CRA"}
+            </button>
+          </form>
+        </div>
+      )}
+
+      {isAdmin && (
+        <div className="mb-6 rounded-[2rem] bg-white p-6 shadow-sm">
+          <h2 className="text-2xl font-black text-slate-950">Créer un CRA pour un consultant</h2>
+          <p className="mt-2 text-sm text-slate-600">Option admin : crée un CRA directement pour un consultant si besoin.</p>
+
+          <form className="mt-6 grid gap-4 md:grid-cols-5" onSubmit={submitCra}>
+            <label className="block">
+              <span className="mb-2 block text-sm font-semibold text-slate-700">Consultant</span>
+              <select value={form.consultantId} onChange={(e) => setForm({ ...form, consultantId: e.target.value })} className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700">
+                <option value="">Sélectionner</option>
+                {consultants.map((consultant) => <option key={consultant.id} value={consultant.id}>{consultant.full_name || consultant.email}</option>)}
+              </select>
+            </label>
+
+            <label className="block">
+              <span className="mb-2 block text-sm font-semibold text-slate-700">Client facultatif</span>
+              <select value={form.clientId} onChange={(e) => setForm({ ...form, clientId: e.target.value })} className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700">
+                <option value="">Aucun</option>
+                {clients.map((client) => <option key={client.id} value={client.id}>{client.full_name || client.email}</option>)}
+              </select>
+            </label>
+
+            <label className="block">
+              <span className="mb-2 block text-sm font-semibold text-slate-700">Mois</span>
+              <input type="month" value={form.month} onChange={(e) => setForm({ ...form, month: e.target.value })} className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700" />
+            </label>
+
+            <Input label="Jours" type="number" value={form.workedDays} onChange={(v) => setForm({ ...form, workedDays: v })} />
+
+            <div className="flex items-end">
+              <button disabled={saving} className="min-h-12 w-full rounded-full bg-blue-700 px-6 py-3 font-semibold text-white hover:bg-blue-800 disabled:opacity-60">Créer</button>
+            </div>
+          </form>
+
+          {craMessage && <div className="mt-4"><Alert>{craMessage}</Alert></div>}
+        </div>
+      )}
+
+      <div className="rounded-[2rem] bg-white p-6 shadow-sm">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-2xl font-black text-slate-950">{isConsultant ? "Mes CRA" : "CRA"}</h2>
+            <p className="mt-2 text-sm text-slate-600">
+              {isClient ? "Valide ou refuse les CRA soumis. Le commentaire est facultatif." : isAdmin ? "Suivi global des CRA et validations." : "Consulte le statut de tes déclarations d’activité."}
+            </p>
+          </div>
+
+          <button onClick={onRefresh} className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800">Rafraîchir</button>
+        </div>
+
+        <div className="mt-6 flex flex-wrap gap-3">
+          <TabButton active={filter === "all"} onClick={() => setFilter("all")}>Tous</TabButton>
+          <TabButton active={filter === "submitted"} onClick={() => setFilter("submitted")}>Soumis</TabButton>
+          <TabButton active={filter === "approved"} onClick={() => setFilter("approved")}>Validés</TabButton>
+          <TabButton active={filter === "rejected"} onClick={() => setFilter("rejected")}>Refusés</TabButton>
+        </div>
+
+        <div className="mt-6 overflow-hidden rounded-3xl border border-slate-100">
+          <div className="hidden grid-cols-7 bg-slate-50 px-5 py-4 text-xs font-bold uppercase tracking-wide text-slate-500 md:grid">
+            <span>Mois</span><span>Consultant</span><span>Client</span><span>Jours</span><span>Statut</span><span>Commentaire</span><span>Action</span>
+          </div>
+
+          {loading ? (
+            <div className="p-6 text-slate-600">Chargement des CRA...</div>
+          ) : visibleCras.length === 0 ? (
+            <div className="p-6 text-slate-600">Aucun CRA trouvé.</div>
+          ) : (
+            visibleCras.map((cra) => (
+              <CraRow key={cra.id} cra={cra} mode={mode} activeActionId={activeActionId} setActiveActionId={setActiveActionId} actionForm={actionForm} setActionForm={setActionForm} onDecision={decideCra} saving={saving} />
+            ))
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function CraRow({ cra, mode, activeActionId, setActiveActionId, actionForm, setActionForm, onDecision, saving }) {
+  const isClient = mode === "client";
+  const isAdmin = mode === "admin";
+  const canDecide = (isClient || isAdmin) && cra.status === "submitted";
+  const consultantName = cra.consultant?.full_name || cra.consultant?.email || "Consultant";
+  const clientName = cra.client?.full_name || cra.client?.email || "Aucun client";
+  const canSeeClientComment = isAdmin || cra.client_comment_visibility === "both";
+  const showActionForm = activeActionId === cra.id;
+
+  return (
+    <div className="border-t border-slate-100 px-5 py-4">
+      <div className="grid gap-3 md:grid-cols-7 md:items-start">
+        <p className="font-bold text-slate-950">{formatMonth(cra.month)}</p>
+        <p className="text-sm text-slate-700">{consultantName}</p>
+        <p className="text-sm text-slate-700">{clientName}</p>
+        <p className="text-sm font-semibold text-slate-900">{cra.worked_days}</p>
+        <p><span className={`rounded-full px-3 py-2 text-xs font-bold ${cra.status === "approved" ? "bg-green-50 text-green-700" : cra.status === "rejected" ? "bg-red-50 text-red-700" : "bg-blue-50 text-blue-700"}`}>{craStatusLabels[cra.status] || cra.status}</span></p>
+        <div className="space-y-2 text-sm text-slate-700">
+          {cra.consultant_comment && <p><span className="font-bold">Consultant :</span> {cra.consultant_comment}</p>}
+          {cra.client_comment && canSeeClientComment && <p><span className="font-bold">Client :</span> {cra.client_comment}</p>}
+          {cra.client_comment && isAdmin && <p className="text-xs text-slate-500">Visibilité : {commentVisibilityLabels[cra.client_comment_visibility] || cra.client_comment_visibility}</p>}
+          {!cra.consultant_comment && !cra.client_comment && <p className="text-slate-400">Aucun</p>}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {canDecide ? (
+            <button onClick={() => setActiveActionId(showActionForm ? null : cra.id)} className="rounded-full bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100">Traiter</button>
+          ) : <span className="text-sm text-slate-400">—</span>}
+        </div>
+      </div>
+
+      {showActionForm && (
+        <div className="mt-4 rounded-3xl bg-slate-50 p-4">
+          <label className="block">
+            <span className="mb-2 block text-sm font-semibold text-slate-700">Commentaire facultatif</span>
+            <textarea value={actionForm.comment} onChange={(e) => setActionForm({ ...actionForm, comment: e.target.value })} className="min-h-24 w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700" placeholder="Ex : validé, précision, motif de refus..." />
+          </label>
+
+          <label className="mt-4 block">
+            <span className="mb-2 block text-sm font-semibold text-slate-700">Qui peut voir le commentaire ?</span>
+            <select value={actionForm.visibility} onChange={(e) => setActionForm({ ...actionForm, visibility: e.target.value })} className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700">
+              <option value="both">Admin + consultant</option>
+              <option value="admin_only">Admin uniquement</option>
+            </select>
+          </label>
+
+          <div className="mt-4 flex flex-wrap gap-3">
+            <button disabled={saving} onClick={() => onDecision(cra, "approved")} className="rounded-full bg-green-600 px-5 py-3 text-sm font-semibold text-white hover:bg-green-700 disabled:opacity-60">Valider</button>
+            <button disabled={saving} onClick={() => onDecision(cra, "rejected")} className="rounded-full bg-red-600 px-5 py-3 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60">Refuser</button>
+            <button disabled={saving} onClick={() => setActiveActionId(null)} className="rounded-full bg-white px-5 py-3 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-100 disabled:opacity-60">Annuler</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+
+function InvoicesManager({ currentProfile, cras, invoices, loading, onRefresh }) {
+  const approvedCras = cras.filter((cra) => cra.status === "approved");
+  const [selectedCraId, setSelectedCraId] = useState(approvedCras[0]?.id || "");
+  const [saving, setSaving] = useState(false);
+  const [invoiceMessage, setInvoiceMessage] = useState("");
+  const [form, setForm] = useState({
+    invoiceNumber: buildInvoiceNumber(),
+    invoiceDate: new Date().toISOString().slice(0, 10),
+    clientName: "",
+    clientAddress: "",
+    clientEmail: "",
+    clientRef: "",
+    supplierOrder: "",
+    paymentTerms: "Dans un délai de 30 jours",
+    description: "Prestation de conseil",
+    dailyRate: 250,
+    extraHoursQty: 0,
+    extraHoursRate: 44.64,
+    saturdayQty: 0,
+    saturdayRate: 223.21,
+    vatRate: 20,
+  });
+
+  const selectedCra = approvedCras.find((cra) => cra.id === selectedCraId);
+
+  useEffect(() => {
+    if (!selectedCra) return;
+
+    setForm((prev) => ({
+      ...prev,
+      clientName: selectedCra.client?.full_name || selectedCra.client?.email || prev.clientName || "",
+      clientEmail: selectedCra.client?.email || prev.clientEmail || "",
+      description: prev.description || "Prestation de conseil",
+    }));
+  }, [selectedCraId]);
+
+  const invoiceData = buildInvoiceData(selectedCra, form);
+
+  async function saveInvoice() {
+    if (!selectedCra) {
+      setInvoiceMessage("Aucun CRA validé sélectionné.");
+      return;
+    }
+
+    setSaving(true);
+    setInvoiceMessage("");
+
+    try {
+      const { error } = await supabase.from("invoices").upsert({
+        cra_id: selectedCra.id,
+        invoice_number: form.invoiceNumber,
+        data: invoiceData,
+        subtotal: invoiceData.subtotal,
+        vat_amount: invoiceData.vatAmount,
+        total: invoiceData.total,
+        created_by: currentProfile.id,
+      }, { onConflict: "cra_id" });
+
+      if (error) throw error;
+
+      setInvoiceMessage("Facture générée et enregistrée.");
+      await onRefresh();
+    } catch (error) {
+      setInvoiceMessage(error.message || "Impossible d’enregistrer la facture.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="mt-6 grid gap-6 lg:grid-cols-[430px_1fr]">
+      <div className="rounded-[2rem] bg-white p-6 shadow-sm">
+        <h2 className="text-2xl font-black text-slate-950">Générer une facture</h2>
+        <p className="mt-2 text-sm text-slate-600">
+          La facture se génère uniquement à partir d’un CRA validé.
+        </p>
+
+        {approvedCras.length === 0 ? (
+          <Alert>Aucun CRA validé disponible. Il faut d’abord qu’un CRA soit validé par le client ou l’admin.</Alert>
+        ) : (
+          <div className="mt-6 space-y-4">
+            <label className="block">
+              <span className="mb-2 block text-sm font-semibold text-slate-700">CRA validé</span>
+              <select
+                value={selectedCraId}
+                onChange={(e) => setSelectedCraId(e.target.value)}
+                className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700"
+              >
+                {approvedCras.map((cra) => (
+                  <option key={cra.id} value={cra.id}>
+                    {formatMonth(cra.month)} — {cra.consultant?.full_name || cra.consultant?.email} — {cra.worked_days} j
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <Input label="N° facture" value={form.invoiceNumber} onChange={(v) => setForm({ ...form, invoiceNumber: v })} />
+            <Input label="Date facture" type="date" value={form.invoiceDate} onChange={(v) => setForm({ ...form, invoiceDate: v })} />
+            <Input label="Client à facturer" value={form.clientName} onChange={(v) => setForm({ ...form, clientName: v })} />
+
+            <label className="block">
+              <span className="mb-2 block text-sm font-semibold text-slate-700">Adresse client</span>
+              <textarea
+                value={form.clientAddress}
+                onChange={(e) => setForm({ ...form, clientAddress: e.target.value })}
+                className="min-h-24 w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700"
+                placeholder="Adresse complète du client"
+              />
+            </label>
+
+            <Input label="Email client" value={form.clientEmail} onChange={(v) => setForm({ ...form, clientEmail: v })} />
+            <Input label="Réf client" value={form.clientRef} onChange={(v) => setForm({ ...form, clientRef: v })} />
+            <Input label="Commande fournisseur" value={form.supplierOrder} onChange={(v) => setForm({ ...form, supplierOrder: v })} />
+            <Input label="Conditions" value={form.paymentTerms} onChange={(v) => setForm({ ...form, paymentTerms: v })} />
+            <Input label="Description principale" value={form.description} onChange={(v) => setForm({ ...form, description: v })} />
+            <Input label="Prix journalier HT" type="number" value={form.dailyRate} onChange={(v) => setForm({ ...form, dailyRate: v })} />
+            <Input label="Heures supplémentaires - quantité" type="number" value={form.extraHoursQty} onChange={(v) => setForm({ ...form, extraHoursQty: v })} />
+            <Input label="Heures supplémentaires - prix HT" type="number" value={form.extraHoursRate} onChange={(v) => setForm({ ...form, extraHoursRate: v })} />
+            <Input label="Samedi travaillé - quantité" type="number" value={form.saturdayQty} onChange={(v) => setForm({ ...form, saturdayQty: v })} />
+            <Input label="Samedi travaillé - prix HT" type="number" value={form.saturdayRate} onChange={(v) => setForm({ ...form, saturdayRate: v })} />
+            <Input label="TVA %" type="number" value={form.vatRate} onChange={(v) => setForm({ ...form, vatRate: v })} />
+
+            {invoiceMessage && <Alert>{invoiceMessage}</Alert>}
+
+            <button
+              disabled={saving}
+              onClick={saveInvoice}
+              className="min-h-12 w-full rounded-full bg-blue-700 px-6 py-3 font-semibold text-white hover:bg-blue-800 disabled:opacity-60"
+            >
+              {saving ? "Enregistrement..." : "Enregistrer la facture"}
+            </button>
+
+            <button
+              onClick={() => printInvoice(invoiceData)}
+              className="min-h-12 w-full rounded-full bg-slate-950 px-6 py-3 font-semibold text-white hover:bg-slate-800"
+            >
+              Imprimer / Exporter PDF
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-6">
+        <InvoicePreview invoice={invoiceData} />
+
+        <div className="rounded-[2rem] bg-white p-6 shadow-sm">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h2 className="text-2xl font-black text-slate-950">Factures enregistrées</h2>
+              <p className="mt-2 text-sm text-slate-600">Historique des factures générées.</p>
+            </div>
+            <button onClick={onRefresh} className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800">
+              Rafraîchir
+            </button>
+          </div>
+
+          <div className="mt-6 overflow-hidden rounded-3xl border border-slate-100">
+            <div className="hidden grid-cols-5 bg-slate-50 px-5 py-4 text-xs font-bold uppercase tracking-wide text-slate-500 md:grid">
+              <span>N°</span><span>Client</span><span>Total</span><span>Date</span><span>Action</span>
+            </div>
+
+            {loading ? (
+              <div className="p-6 text-slate-600">Chargement des factures...</div>
+            ) : invoices.length === 0 ? (
+              <div className="p-6 text-slate-600">Aucune facture enregistrée.</div>
+            ) : (
+              invoices.map((invoice) => (
+                <div key={invoice.id} className="grid gap-3 border-t border-slate-100 px-5 py-4 md:grid-cols-5 md:items-center">
+                  <p className="font-bold">{invoice.invoice_number}</p>
+                  <p className="text-sm text-slate-700">{invoice.data?.client?.name || "-"}</p>
+                  <p className="text-sm font-semibold">{formatCurrency(invoice.total)}</p>
+                  <p className="text-xs text-slate-500">{formatDate(invoice.created_at)}</p>
+                  <button onClick={() => printInvoice(invoice.data)} className="w-fit rounded-full bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100">
+                    PDF
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function InvoicePreview({ invoice }) {
+  if (!invoice?.cra) {
+    return (
+      <div className="rounded-[2rem] bg-white p-6 shadow-sm">
+        <h2 className="text-2xl font-black text-slate-950">Aperçu facture</h2>
+        <p className="mt-2 text-sm text-slate-600">Sélectionne un CRA validé pour générer l’aperçu.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-[2rem] bg-white p-6 shadow-sm">
+      <div className="overflow-hidden rounded-3xl border border-slate-100 bg-white p-6">
+        <InvoiceHtml invoice={invoice} />
+      </div>
+    </div>
+  );
+}
+
+function InvoiceHtml({ invoice }) {
+  return (
+    <div className="bg-white text-sm text-slate-950">
+      <div className="flex flex-col justify-between gap-6 md:flex-row">
+        <div>
+          <h1 className="text-3xl font-black text-blue-800">{COMPANY_INVOICE_INFO.name}</h1>
+          <p className="mt-2 font-semibold">{COMPANY_INVOICE_INFO.legalName}</p>
+          <p>{COMPANY_INVOICE_INFO.address}</p>
+          <p>Téléphone : {COMPANY_INVOICE_INFO.phone}</p>
+          <p>{COMPANY_INVOICE_INFO.email}</p>
+        </div>
+        <div className="text-left md:text-right">
+          <h2 className="text-4xl font-black text-blue-700">FACTURE</h2>
+          <p className="mt-3"><b>N° facture :</b> {invoice.invoiceNumber}</p>
+          <p><b>Date :</b> {formatDateOnly(invoice.invoiceDate)}</p>
+          <p><b>N° TVA :</b> {COMPANY_INVOICE_INFO.vatNumber}</p>
+        </div>
+      </div>
+
+      <div className="mt-8 grid gap-6 md:grid-cols-2">
+        <div>
+          <h3 className="bg-blue-700 px-3 py-2 font-bold text-white">FACTURER À</h3>
+          <div className="border border-slate-200 p-3">
+            <p className="font-bold">{invoice.client.name || "-"}</p>
+            <p className="whitespace-pre-line">{invoice.client.address || "-"}</p>
+            <p>{invoice.client.email || ""}</p>
+          </div>
+        </div>
+        <div>
+          <h3 className="bg-blue-700 px-3 py-2 font-bold text-white">CONDITIONS</h3>
+          <div className="border border-slate-200 p-3">
+            <p><b>Réf client :</b> {invoice.clientRef || "-"}</p>
+            <p><b>Commande fournisseur :</b> {invoice.supplierOrder || "-"}</p>
+            <p><b>Paiement :</b> {invoice.paymentTerms || "-"}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-8 overflow-x-auto">
+        <table className="w-full border-collapse text-left text-sm">
+          <thead>
+            <tr className="bg-blue-700 text-white">
+              <th className="p-2">DESCRIPTION</th>
+              <th className="p-2 text-right">QTÉ</th>
+              <th className="p-2 text-right">PRIX HT</th>
+              <th className="p-2 text-right">MONTANT HT</th>
+            </tr>
+          </thead>
+          <tbody>
+            {invoice.lines.map((line, index) => (
+              <tr key={index} className="border-b border-slate-200">
+                <td className="p-2">{line.description}</td>
+                <td className="p-2 text-right">{line.quantity}</td>
+                <td className="p-2 text-right">{formatCurrency(line.unitPrice)}</td>
+                <td className="p-2 text-right">{formatCurrency(line.amount)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-6 flex justify-end">
+        <div className="w-full max-w-sm rounded-2xl bg-blue-50 p-4">
+          <div className="flex justify-between"><span>Sous-total HT</span><b>{formatCurrency(invoice.subtotal)}</b></div>
+          <div className="flex justify-between"><span>TVA {invoice.vatRate}%</span><b>{formatCurrency(invoice.vatAmount)}</b></div>
+          <div className="mt-3 flex justify-between border-t border-blue-100 pt-3 text-xl"><span>TOTAL</span><b>{formatCurrency(invoice.total)}</b></div>
+        </div>
+      </div>
+
+      <div className="mt-8 rounded-2xl border-2 border-slate-900 p-4">
+        <h3 className="mb-3 bg-blue-700 px-3 py-2 text-center font-bold text-white">Détails bancaires</h3>
+        <p><b>Titulaire :</b> {COMPANY_INVOICE_INFO.legalName}</p>
+        <p><b>IBAN :</b> {COMPANY_INVOICE_INFO.iban}</p>
+        <p><b>BIC :</b> {COMPANY_INVOICE_INFO.bic}</p>
+        <p className="mt-2 text-right"><b>SIRET :</b> {COMPANY_INVOICE_INFO.siret}</p>
+      </div>
+
+      <p className="mt-6 text-center text-lg font-bold text-blue-700">Merci pour votre confiance !</p>
+    </div>
+  );
+}
+
+function buildInvoiceData(cra, form) {
+  if (!cra) return null;
+
+  const workedDays = Number(cra.worked_days || 0);
+  const dailyRate = Number(form.dailyRate || 0);
+  const extraHoursQty = Number(form.extraHoursQty || 0);
+  const extraHoursRate = Number(form.extraHoursRate || 0);
+  const saturdayQty = Number(form.saturdayQty || 0);
+  const saturdayRate = Number(form.saturdayRate || 0);
+  const vatRate = Number(form.vatRate || 0);
+
+  const lines = [
+    {
+      description: `${form.description || "Prestation de conseil"} - ${formatMonth(cra.month)}`,
+      quantity: workedDays,
+      unitPrice: dailyRate,
+      amount: workedDays * dailyRate,
+    },
+  ];
+
+  if (extraHoursQty > 0) {
+    lines.push({ description: "Heures supplémentaires", quantity: extraHoursQty, unitPrice: extraHoursRate, amount: extraHoursQty * extraHoursRate });
+  }
+
+  if (saturdayQty > 0) {
+    lines.push({ description: "Samedi travaillé", quantity: saturdayQty, unitPrice: saturdayRate, amount: saturdayQty * saturdayRate });
+  }
+
+  const subtotal = lines.reduce((sum, line) => sum + line.amount, 0);
+  const vatAmount = subtotal * vatRate / 100;
+  const total = subtotal + vatAmount;
+
+  return {
+    invoiceNumber: form.invoiceNumber,
+    invoiceDate: form.invoiceDate,
+    cra: {
+      id: cra.id,
+      month: cra.month,
+      workedDays: workedDays,
+      consultant: cra.consultant?.full_name || cra.consultant?.email || "",
+      status: cra.status,
+      validatedAt: cra.validated_at,
+    },
+    client: {
+      name: form.clientName,
+      address: form.clientAddress,
+      email: form.clientEmail,
+    },
+    clientRef: form.clientRef,
+    supplierOrder: form.supplierOrder,
+    paymentTerms: form.paymentTerms,
+    vatRate,
+    lines,
+    subtotal,
+    vatAmount,
+    total,
+  };
+}
+
+function printInvoice(invoice) {
+  if (!invoice) return;
+
+  const html = buildInvoicePrintHtml(invoice);
+  const printWindow = window.open("", "_blank", "width=1100,height=900");
+
+  if (!printWindow) {
+    alert("Autorise les popups pour exporter la facture en PDF.");
+    return;
+  }
+
+  printWindow.document.write(html);
+  printWindow.document.close();
+  printWindow.focus();
+  setTimeout(() => printWindow.print(), 500);
+}
+
+function buildInvoicePrintHtml(invoice) {
+  const rows = invoice.lines.map((line) => `
+    <tr>
+      <td>${escapeHtml(line.description)}</td>
+      <td style="text-align:right">${line.quantity}</td>
+      <td style="text-align:right">${formatCurrency(line.unitPrice)}</td>
+      <td style="text-align:right">${formatCurrency(line.amount)}</td>
+    </tr>
+  `).join("");
+
+  return `<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<title>Facture ${escapeHtml(invoice.invoiceNumber)}</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 32px; color: #0f172a; }
+  .top { display:flex; justify-content:space-between; gap:32px; }
+  h1 { color:#1d4ed8; margin:0; font-size:34px; }
+  h2 { color:#1d4ed8; margin:0; font-size:44px; text-align:right; }
+  .blue { background:#1d4ed8; color:white; padding:8px 10px; font-weight:bold; }
+  .box { border:1px solid #cbd5e1; padding:12px; min-height:90px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-top:34px; }
+  table { width:100%; border-collapse:collapse; margin-top:34px; }
+  th { background:#1d4ed8; color:white; padding:9px; text-align:left; }
+  td { border-bottom:1px solid #cbd5e1; padding:9px; }
+  .totals { margin-left:auto; margin-top:24px; width:330px; background:#dbeafe; padding:16px; }
+  .line { display:flex; justify-content:space-between; margin:7px 0; }
+  .total { border-top:1px solid #93c5fd; padding-top:10px; font-size:22px; font-weight:bold; }
+  .bank { border:3px solid #0f172a; margin-top:34px; padding:14px; width:620px; }
+  .thanks { text-align:center; color:#1d4ed8; font-size:20px; font-weight:bold; margin-top:26px; }
+  @media print { button { display:none; } body { margin: 18px; } }
+</style>
+</head>
+<body>
+  <div class="top">
+    <div>
+      <h1>${escapeHtml(COMPANY_INVOICE_INFO.name)}</h1>
+      <p><b>${escapeHtml(COMPANY_INVOICE_INFO.legalName)}</b><br>
+      ${escapeHtml(COMPANY_INVOICE_INFO.address)}<br>
+      Téléphone : ${escapeHtml(COMPANY_INVOICE_INFO.phone)}<br>
+      ${escapeHtml(COMPANY_INVOICE_INFO.email)}</p>
+    </div>
+    <div>
+      <h2>FACTURE</h2>
+      <p style="text-align:right"><b>N° facture :</b> ${escapeHtml(invoice.invoiceNumber)}<br>
+      <b>Date :</b> ${formatDateOnly(invoice.invoiceDate)}<br>
+      <b>N° TVA :</b> ${escapeHtml(COMPANY_INVOICE_INFO.vatNumber)}</p>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div>
+      <div class="blue">FACTURER À</div>
+      <div class="box"><b>${escapeHtml(invoice.client.name || "-")}</b><br>${escapeHtml(invoice.client.address || "-").replaceAll("\\n", "<br>")}<br>${escapeHtml(invoice.client.email || "")}</div>
+    </div>
+    <div>
+      <div class="blue">CONDITIONS</div>
+      <div class="box"><b>Réf client :</b> ${escapeHtml(invoice.clientRef || "-")}<br>
+      <b>Commande fournisseur :</b> ${escapeHtml(invoice.supplierOrder || "-")}<br>
+      <b>Paiement :</b> ${escapeHtml(invoice.paymentTerms || "-")}</div>
+    </div>
+  </div>
+
+  <table>
+    <thead><tr><th>DESCRIPTION</th><th style="text-align:right">QTÉ</th><th style="text-align:right">PRIX HT</th><th style="text-align:right">MONTANT HT</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+
+  <div class="totals">
+    <div class="line"><span>Sous-total HT</span><b>${formatCurrency(invoice.subtotal)}</b></div>
+    <div class="line"><span>TVA ${invoice.vatRate}%</span><b>${formatCurrency(invoice.vatAmount)}</b></div>
+    <div class="line total"><span>TOTAL</span><b>${formatCurrency(invoice.total)}</b></div>
+  </div>
+
+  <div class="bank">
+    <div class="blue" style="text-align:center">Détails bancaires</div>
+    <p><b>Titulaire :</b> ${escapeHtml(COMPANY_INVOICE_INFO.legalName)}<br>
+    <b>IBAN :</b> ${escapeHtml(COMPANY_INVOICE_INFO.iban)}<br>
+    <b>BIC :</b> ${escapeHtml(COMPANY_INVOICE_INFO.bic)}</p>
+    <p style="text-align:right"><b>SIRET :</b> ${escapeHtml(COMPANY_INVOICE_INFO.siret)}</p>
+  </div>
+
+  <p class="thanks">Merci pour votre confiance !</p>
+</body>
+</html>`;
+}
+
+function buildInvoiceNumber() {
+  const now = new Date();
+  return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatCurrency(value) {
+  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(Number(value || 0));
+}
+
+function formatDateOnly(dateValue) {
+  if (!dateValue) return "-";
+  return new Intl.DateTimeFormat("fr-FR").format(new Date(dateValue));
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
 
 function Header({ signOut }) {
   return (
@@ -964,6 +1813,14 @@ function Input({ label, value, onChange, type = "text" }) {
       />
     </label>
   );
+}
+
+function formatMonth(dateValue) {
+  if (!dateValue) return "-";
+  return new Intl.DateTimeFormat("fr-FR", {
+    month: "long",
+    year: "numeric",
+  }).format(new Date(dateValue));
 }
 
 function formatDate(dateValue) {
