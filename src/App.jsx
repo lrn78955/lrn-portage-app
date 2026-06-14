@@ -438,7 +438,7 @@ function ProfilesManager({ profiles, loading, onRefresh, onUpdateRole }) {
   );
 }
 
-function DocumentsManager({ currentProfile, isAdmin, profiles = [], documents, loading, onRefresh }) {
+function DocumentsManager({ currentProfile, isAdmin = false, readOnly = false, profiles = [], documents, loading, onRefresh }) {
   const [form, setForm] = useState({
     ownerId: currentProfile?.id || "",
     title: "",
@@ -446,6 +446,7 @@ function DocumentsManager({ currentProfile, isAdmin, profiles = [], documents, l
     file: null,
   });
   const [uploading, setUploading] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
   const [docMessage, setDocMessage] = useState("");
   const [filter, setFilter] = useState("all");
 
@@ -498,13 +499,44 @@ function DocumentsManager({ currentProfile, isAdmin, profiles = [], documents, l
     }
   }
 
+  async function deleteDocument(doc) {
+    const confirmed = window.confirm(`Supprimer le document \"${doc.title}\" ?`);
+    if (!confirmed) return;
+
+    setDeletingId(doc.id);
+    setDocMessage("");
+
+    try {
+      const { error: storageError } = await supabase.storage
+        .from(DOCUMENT_BUCKET)
+        .remove([doc.file_path]);
+
+      if (storageError) throw storageError;
+
+      const { error: deleteError } = await supabase
+        .from("documents")
+        .delete()
+        .eq("id", doc.id);
+
+      if (deleteError) throw deleteError;
+
+      setDocMessage("Document supprimé avec succès.");
+      await onRefresh();
+    } catch (error) {
+      setDocMessage(error.message || "Impossible de supprimer le document.");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   const visibleDocuments = documents.filter((doc) => {
     if (filter === "all") return true;
     return doc.document_type === filter;
   });
 
   return (
-    <section className="mt-6 grid gap-6 lg:grid-cols-[420px_1fr]">
+    <section className={readOnly ? "mt-6" : "mt-6 grid gap-6 lg:grid-cols-[420px_1fr]"}>
+      {!readOnly && (
       <div className="rounded-[2rem] bg-white p-6 shadow-sm">
         <h2 className="text-2xl font-black text-slate-950">Déposer un document</h2>
         <p className="mt-2 text-sm text-slate-600">
@@ -568,13 +600,14 @@ function DocumentsManager({ currentProfile, isAdmin, profiles = [], documents, l
           </button>
         </form>
       </div>
+      )}
 
       <div className="rounded-[2rem] bg-white p-6 shadow-sm">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="text-2xl font-black text-slate-950">Documents</h2>
             <p className="mt-2 text-sm text-slate-600">
-              Consulte et ouvre les documents déposés.
+              {readOnly ? "Consulte et ouvre tes documents." : "Consulte, ouvre et supprime les documents déposés."}
             </p>
           </div>
 
@@ -609,7 +642,13 @@ function DocumentsManager({ currentProfile, isAdmin, profiles = [], documents, l
             <div className="p-6 text-slate-600">Aucun document trouvé.</div>
           ) : (
             visibleDocuments.map((doc) => (
-              <DocumentRow key={doc.id} doc={doc} />
+              <DocumentRow
+                key={doc.id}
+                doc={doc}
+                canDelete={isAdmin}
+                deleting={deletingId === doc.id}
+                onDelete={deleteDocument}
+              />
             ))
           )}
         </div>
@@ -618,7 +657,7 @@ function DocumentsManager({ currentProfile, isAdmin, profiles = [], documents, l
   );
 }
 
-function DocumentRow({ doc }) {
+function DocumentRow({ doc, canDelete = false, deleting = false, onDelete }) {
   const [opening, setOpening] = useState(false);
   const ownerName = doc.profiles?.full_name || doc.profiles?.email || "Utilisateur";
 
@@ -648,13 +687,25 @@ function DocumentRow({ doc }) {
       <p className="text-sm text-slate-700">{docTypeLabels[doc.document_type] || doc.document_type}</p>
       <p className="text-sm text-slate-700">{ownerName}</p>
       <p className="text-xs text-slate-500">{formatDate(doc.created_at)}</p>
-      <button
-        onClick={openDocument}
-        disabled={opening}
-        className="w-fit rounded-full bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-60"
-      >
-        {opening ? "Ouverture..." : "Ouvrir"}
-      </button>
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={openDocument}
+          disabled={opening || deleting}
+          className="w-fit rounded-full bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-60"
+        >
+          {opening ? "Ouverture..." : "Ouvrir"}
+        </button>
+
+        {canDelete && (
+          <button
+            onClick={() => onDelete?.(doc)}
+            disabled={deleting || opening}
+            className="w-fit rounded-full bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-100 disabled:opacity-60"
+          >
+            {deleting ? "Suppression..." : "Supprimer"}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -748,6 +799,7 @@ function UserDashboard({ session, profile, message, signOut }) {
         {activeTab === "documents" && (
           <DocumentsManager
             currentProfile={profile}
+            readOnly
             documents={documents}
             loading={loadingDocuments}
             onRefresh={loadDocuments}
@@ -769,7 +821,7 @@ function UserDashboard({ session, profile, message, signOut }) {
 function Header({ signOut }) {
   return (
     <header className="sticky top-0 z-40 border-b border-slate-100 bg-white/90 backdrop-blur">
-      <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 md:px-6">
+      <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-4 md:px-6">
         <Logo />
         <button onClick={signOut} className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800">
           Déconnexion
@@ -785,7 +837,7 @@ function Hero({ role, title }) {
       <p className="inline-flex rounded-full border border-blue-400/30 bg-blue-500/10 px-4 py-2 text-sm text-blue-100">
         {role}
       </p>
-      <h1 className="mt-5 text-3xl font-black md:text-5xl">{title}</h1>
+      <h1 className="mt-5 text-3xl font-black leading-tight md:text-5xl">{title}</h1>
       <p className="mt-4 max-w-2xl leading-8 text-slate-300">
         Bienvenue dans votre espace connecté LRN PORTAGE.
       </p>
@@ -834,7 +886,7 @@ function Loader({ text }) {
 function Logo({ light = false }) {
   return (
     <div className="flex items-end gap-2">
-      <span className={`text-3xl font-black tracking-tight ${light ? "text-white" : "text-slate-950"}`}>LRN</span>
+      <span className={`text-2xl font-black tracking-tight md:text-3xl ${light ? "text-white" : "text-slate-950"}`}>LRN</span>
       <span className="mb-1 text-sm font-semibold tracking-[0.35em] text-blue-500">PORTAGE</span>
     </div>
   );

@@ -40,6 +40,7 @@ drop policy if exists "Users can read their own documents" on public.documents;
 drop policy if exists "Users can insert their own documents" on public.documents;
 drop policy if exists "Admins can read all documents" on public.documents;
 drop policy if exists "Admins can insert documents for anyone" on public.documents;
+drop policy if exists "Users and admins can delete documents" on public.documents;
 
 create policy "Users and admins can read documents"
 on public.documents for select
@@ -48,6 +49,10 @@ using (public.is_admin() or auth.uid() = owner_id);
 create policy "Users and admins can insert documents"
 on public.documents for insert
 with check (public.is_admin() or auth.uid() = owner_id);
+
+create policy "Users and admins can delete documents"
+on public.documents for delete
+using (public.is_admin() or auth.uid() = owner_id);
 
 -- Storage policies
 drop policy if exists "Users and admins can upload documents" on storage.objects;
