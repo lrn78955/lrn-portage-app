@@ -67,6 +67,7 @@ on public.cra for insert
 with check (
   public.is_admin()
   or auth.uid() = consultant_id
+  or auth.uid() = client_id
 );
 
 create policy "CRA update access"

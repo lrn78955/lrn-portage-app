@@ -1,4 +1,4 @@
--- LRN PORTAGE APP - Affiliations consultants / clients
+-- LRN PORTAGE APP - Affiliations consultants / clients V5.8.9
 create table if not exists public.consultant_clients (
   id uuid primary key default gen_random_uuid(),
   consultant_id uuid not null references public.profiles(id) on delete cascade,
@@ -60,7 +60,8 @@ using (
   )
 );
 
--- Renforce la création de CRA : un consultant ne peut créer un CRA que pour un client affilié.
+-- Consultant: peut créer un CRA pour un client affilié.
+-- Client: peut créer un CRA pour un consultant affilié.
 drop policy if exists "CRA insert access" on public.cra;
 
 create policy "CRA insert access"
@@ -74,6 +75,15 @@ with check (
       from public.consultant_clients cc
       where cc.consultant_id = auth.uid()
       and cc.client_id = public.cra.client_id
+    )
+  )
+  or (
+    auth.uid() = client_id
+    and exists (
+      select 1
+      from public.consultant_clients cc
+      where cc.client_id = auth.uid()
+      and cc.consultant_id = public.cra.consultant_id
     )
   )
 );

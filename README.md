@@ -78,3 +78,11 @@ Relancer dans SQL Editor, dans cet ordre :
 - Bons de commande : préenregistrement admin avec client, référence, conditions, TJM, taux heure supp et TVA.
 - Génération facture : sélection du bon de commande pour préremplir les champs.
 - Nouveau script SQL : supabase-purchase-orders.sql.
+
+## V5.8.9
+- Affiliation consultant/client avec bon de commande PDF obligatoire.
+- Saisie du numéro de bon de commande, référence client/contrat, infos société, dates de commande et de péremption.
+- Blocage de facture si le bon de commande est expiré pour le mois du CRA.
+- Les clients peuvent voir leurs consultants affiliés et créer des CRA séparés pour chaque consultant.
+- Les clients peuvent ajouter une pièce jointe PDF/image en plus du commentaire lors de la validation/refus d’un CRA.
+- Documents partagés : un document peut être visible par son propriétaire et un utilisateur partagé.

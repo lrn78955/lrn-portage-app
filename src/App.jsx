@@ -20,6 +20,7 @@ const docTypes = {
   justificatif: "Justificatif",
   cra: "CRA",
   facture: "Facture",
+  bon_commande: "Bon de commande",
   autre: "Autre",
 };
 
@@ -252,10 +253,10 @@ function Dashboard({ session, profile, signOut }) {
   async function loadDocuments() {
     let query = supabase
       .from("documents")
-      .select("id,owner_id,title,file_path,document_type,created_at,profiles:owner_id(email,full_name,role)")
+      .select("id,owner_id,shared_with_id,title,file_path,document_type,created_at,profiles:owner_id(email,full_name,role),shared_with:shared_with_id(email,full_name,role)")
       .order("created_at", { ascending: false });
 
-    if (!isAdmin) query = query.eq("owner_id", profile.id);
+    if (!isAdmin) query = query.or(`owner_id.eq.${profile.id},shared_with_id.eq.${profile.id}`);
 
     const { data, error } = await query;
     if (error) {
@@ -311,7 +312,7 @@ function Dashboard({ session, profile, signOut }) {
 
     const { data, error } = await supabase
       .from("purchase_orders")
-      .select("id,client_id,order_number,client_name,client_address,client_email,client_ref,payment_terms,daily_rate,extra_hour_rate,vat_rate,created_at,client:client_id(id,email,full_name,role)")
+      .select("id,client_id,consultant_id,document_id,file_path,order_number,supplier_ref,supplier_code,order_date,end_date,client_name,client_address,client_email,client_ref,payment_terms,daily_rate,extra_hour_rate,vat_rate,created_at,client:client_id(id,email,full_name,role),consultant:consultant_id(id,email,full_name,role)")
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -418,7 +419,25 @@ function Dashboard({ session, profile, signOut }) {
 
 function Profiles({ profiles, assignments, onRefresh }) {
   const [msg, setMsg] = useState("");
-  const [linkForm, setLinkForm] = useState({ consultantId: "", clientId: "" });
+  const [linkForm, setLinkForm] = useState({
+    consultantId: "",
+    clientId: "",
+    orderNumber: "",
+    supplierRef: "",
+    supplierCode: "",
+    orderDate: new Date().toISOString().slice(0, 10),
+    endDate: "",
+    clientName: "",
+    clientAddress: "",
+    clientEmail: "",
+    clientRef: "",
+    paymentTerms: "Règlement à 30 jours fin de mois",
+    dailyRate: 250,
+    extraHourRate: 230,
+    vatRate: 20,
+    file: null,
+  });
+  const [busy, setBusy] = useState(false);
   const consultants = profiles.filter((p) => p.role === "consultant");
   const clients = profiles.filter((p) => p.role === "client");
 
@@ -432,28 +451,95 @@ function Profiles({ profiles, assignments, onRefresh }) {
     await onRefresh();
   }
 
+  function selectedClient() {
+    return clients.find((c) => c.id === linkForm.clientId) || null;
+  }
+
   async function linkConsultantClient(e) {
     e.preventDefault();
+    setBusy(true);
     setMsg("");
 
-    if (!linkForm.consultantId || !linkForm.clientId) {
-      setMsg("Sélectionne un consultant et un client.");
-      return;
+    try {
+      if (!linkForm.consultantId || !linkForm.clientId) throw new Error("Sélectionne un consultant et un client.");
+      if (!linkForm.orderNumber.trim()) throw new Error("Le numéro de bon de commande est obligatoire.");
+      if (!linkForm.endDate) throw new Error("La date de fin / péremption du bon de commande est obligatoire.");
+      if (!linkForm.file) throw new Error("Le bon de commande papier/PDF est obligatoire.");
+
+      const client = selectedClient();
+      const clientName = linkForm.clientName.trim() || client?.full_name || client?.email || "Client";
+      const clientEmail = linkForm.clientEmail.trim() || client?.email || "";
+      const clientRef = linkForm.clientRef.trim() || clientName;
+      const fileName = linkForm.file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+      const path = `${linkForm.clientId}/${Date.now()}-BDC-${linkForm.orderNumber.trim()}-${fileName}`;
+
+      const uploadResult = await supabase.storage.from(BUCKET).upload(path, linkForm.file, { upsert: false });
+      if (uploadResult.error) throw uploadResult.error;
+
+      const docResult = await supabase.from("documents").insert({
+        owner_id: linkForm.clientId,
+        shared_with_id: linkForm.consultantId,
+        title: `Bon de commande ${linkForm.orderNumber.trim()}`,
+        document_type: "bon_commande",
+        file_path: path,
+      }).select("id").single();
+      if (docResult.error) throw docResult.error;
+
+      const assignmentResult = await supabase.from("consultant_clients").upsert({
+        consultant_id: linkForm.consultantId,
+        client_id: linkForm.clientId,
+      }, { onConflict: "consultant_id,client_id" });
+      if (assignmentResult.error) throw assignmentResult.error;
+
+      const poResult = await supabase.from("purchase_orders").upsert({
+        consultant_id: linkForm.consultantId,
+        client_id: linkForm.clientId,
+        document_id: docResult.data.id,
+        file_path: path,
+        order_number: linkForm.orderNumber.trim(),
+        supplier_ref: linkForm.supplierRef.trim() || null,
+        supplier_code: linkForm.supplierCode.trim() || null,
+        order_date: linkForm.orderDate || null,
+        end_date: linkForm.endDate,
+        client_name: clientName,
+        client_address: linkForm.clientAddress.trim() || null,
+        client_email: clientEmail || null,
+        client_ref: clientRef,
+        payment_terms: linkForm.paymentTerms.trim() || "Règlement à 30 jours fin de mois",
+        daily_rate: Number(linkForm.dailyRate || 0),
+        extra_hour_rate: Number(linkForm.extraHourRate || 0),
+        vat_rate: Number(linkForm.vatRate || 0),
+        created_by: profiles.find((p) => p.role === "admin")?.id || null,
+      }, { onConflict: "client_id,order_number" });
+      if (poResult.error) throw poResult.error;
+
+      setMsg("Affiliation créée et bon de commande enregistré.");
+      setLinkForm({
+        consultantId: "",
+        clientId: "",
+        orderNumber: "",
+        supplierRef: "",
+        supplierCode: "",
+        orderDate: new Date().toISOString().slice(0, 10),
+        endDate: "",
+        clientName: "",
+        clientAddress: "",
+        clientEmail: "",
+        clientRef: "",
+        paymentTerms: "Règlement à 30 jours fin de mois",
+        dailyRate: 250,
+        extraHourRate: 230,
+        vatRate: 20,
+        file: null,
+      });
+      const input = document.getElementById("po-affiliation-file");
+      if (input) input.value = "";
+      await onRefresh();
+    } catch (error) {
+      setMsg(error.message || "Impossible de créer l’affiliation.");
+    } finally {
+      setBusy(false);
     }
-
-    const { error } = await supabase.from("consultant_clients").insert({
-      consultant_id: linkForm.consultantId,
-      client_id: linkForm.clientId,
-    });
-
-    if (error) {
-      setMsg(error.message.includes("duplicate") ? "Cette affiliation existe déjà." : error.message);
-      return;
-    }
-
-    setMsg("Consultant affilié au client.");
-    setLinkForm({ consultantId: "", clientId: "" });
-    await onRefresh();
   }
 
   async function unlinkConsultantClient(id) {
@@ -492,20 +578,53 @@ function Profiles({ profiles, assignments, onRefresh }) {
         </div>
       </Panel>
 
-      <Panel title="Affiliations consultants / clients" subtitle="Associe chaque consultant aux clients pour lesquels il peut déclarer un CRA.">
-        <form onSubmit={linkConsultantClient} className="grid gap-4 md:grid-cols-3">
+      <Panel title="Affiliation + bon de commande obligatoire" subtitle="Associe un consultant à un client et rattache le bon de commande PDF avec ses informations de facturation.">
+        <form onSubmit={linkConsultantClient} className="mt-4 grid gap-4 md:grid-cols-2">
           <Select label="Consultant" value={linkForm.consultantId} onChange={(v) => setLinkForm({ ...linkForm, consultantId: v })}>
             <option value="">Sélectionner un consultant</option>
             {consultants.map((p) => <option key={p.id} value={p.id}>{p.full_name || p.email}</option>)}
           </Select>
 
-          <Select label="Client" value={linkForm.clientId} onChange={(v) => setLinkForm({ ...linkForm, clientId: v })}>
+          <Select label="Client" value={linkForm.clientId} onChange={(v) => {
+            const client = clients.find((c) => c.id === v);
+            setLinkForm({
+              ...linkForm,
+              clientId: v,
+              clientName: client?.full_name || client?.email || linkForm.clientName,
+              clientEmail: client?.email || linkForm.clientEmail,
+              clientRef: client?.full_name || client?.email || linkForm.clientRef,
+            });
+          }}>
             <option value="">Sélectionner un client</option>
             {clients.map((p) => <option key={p.id} value={p.id}>{p.full_name || p.email}</option>)}
           </Select>
 
-          <div className="flex items-end">
-            <button className="w-full rounded-full bg-blue-700 px-6 py-3 font-bold text-white">Affilier</button>
+          <Input label="N° bon de commande obligatoire" value={linkForm.orderNumber} onChange={(v) => setLinkForm({ ...linkForm, orderNumber: v })} />
+          <Input label="Réf client / contrat" value={linkForm.clientRef} onChange={(v) => setLinkForm({ ...linkForm, clientRef: v })} />
+          <Input label="Réf fournisseur" value={linkForm.supplierRef} onChange={(v) => setLinkForm({ ...linkForm, supplierRef: v })} />
+          <Input label="Code fournisseur" value={linkForm.supplierCode} onChange={(v) => setLinkForm({ ...linkForm, supplierCode: v })} />
+          <Input label="Date de commande" type="date" value={linkForm.orderDate} onChange={(v) => setLinkForm({ ...linkForm, orderDate: v })} />
+          <Input label="Date fin / péremption obligatoire" type="date" value={linkForm.endDate} onChange={(v) => setLinkForm({ ...linkForm, endDate: v })} />
+          <Input label="Société à facturer" value={linkForm.clientName} onChange={(v) => setLinkForm({ ...linkForm, clientName: v })} />
+          <Input label="Email facturation" value={linkForm.clientEmail} onChange={(v) => setLinkForm({ ...linkForm, clientEmail: v })} />
+          <label className="block md:col-span-2">
+            <span className="mb-2 block text-sm font-bold">Adresse société à facturer</span>
+            <textarea value={linkForm.clientAddress} onChange={(e) => setLinkForm({ ...linkForm, clientAddress: e.target.value })} className="min-h-24 w-full rounded-2xl border px-4 py-3" />
+          </label>
+          <Input label="Conditions de règlement" value={linkForm.paymentTerms} onChange={(v) => setLinkForm({ ...linkForm, paymentTerms: v })} />
+          <Input label="Prix journalier HT / TJM" type="number" value={linkForm.dailyRate} onChange={(v) => setLinkForm({ ...linkForm, dailyRate: v })} />
+          <Input label="Prix heure supp HT" type="number" value={linkForm.extraHourRate} onChange={(v) => setLinkForm({ ...linkForm, extraHourRate: v })} />
+          <Input label="TVA %" type="number" value={linkForm.vatRate} onChange={(v) => setLinkForm({ ...linkForm, vatRate: v })} />
+
+          <label className="block md:col-span-2">
+            <span className="mb-2 block text-sm font-bold text-slate-700">Bon de commande papier/PDF obligatoire</span>
+            <input id="po-affiliation-file" type="file" accept="application/pdf,image/*" onChange={(e) => setLinkForm({ ...linkForm, file: e.target.files?.[0] || null })} className="w-full rounded-2xl border px-4 py-3" />
+          </label>
+
+          <div className="md:col-span-2">
+            <button disabled={busy} className="w-full rounded-full bg-blue-700 px-6 py-3 font-bold text-white disabled:opacity-60">
+              {busy ? "Traitement..." : "Affilier et enregistrer le bon de commande"}
+            </button>
           </div>
         </form>
 
@@ -637,7 +756,7 @@ function Documents({ profile, isAdmin, profiles, documents, onRefresh }) {
 
       <Panel title="Documents" subtitle="Consulte, ouvre et supprime les documents déposés.">
         <div className="mt-6 flex flex-wrap gap-3">
-          {["all", "contrat", "fiche_paie", "justificatif", "cra", "facture"].map((v) => (
+          {["all", "contrat", "fiche_paie", "justificatif", "cra", "facture", "bon_commande"].map((v) => (
             <Pill key={v} active={filter === v} onClick={() => setFilter(v)}>{v === "all" ? "Tous" : docTypes[v]}</Pill>
           ))}
         </div>
@@ -665,45 +784,53 @@ function Documents({ profile, isAdmin, profiles, documents, onRefresh }) {
 }
 
 function Cra({ profile, isAdmin, isClient, profiles, assignments, cras, onRefresh }) {
-  const consultants = profiles.filter((p) => p.role === "consultant");
+  const adminConsultants = profiles.filter((p) => p.role === "consultant");
   const assignedClients = assignments
     .filter((a) => a.consultant_id === profile.id && a.client)
     .map((a) => a.client);
-  const clients = isAdmin ? profiles.filter((p) => p.role === "client") : assignedClients;
+  const clientConsultants = assignments
+    .filter((a) => a.client_id === profile.id && a.consultant)
+    .map((a) => a.consultant);
+  const clients = isAdmin ? profiles.filter((p) => p.role === "client") : isClient ? [profile] : assignedClients;
+  const consultantsForForm = isAdmin ? adminConsultants : isClient ? clientConsultants : [profile];
   const [form, setForm] = useState({
-    consultantId: isAdmin ? "" : profile.id,
-    clientId: "",
+    consultantId: isAdmin || isClient ? "" : profile.id,
+    clientId: isClient ? profile.id : "",
     month: new Date().toISOString().slice(0, 7),
     workedDays: 20,
     extraHours: 0,
     extraHoursRate: 44.64,
-    saturdayDays: 0,
-    saturdayRate: 223.21,
   });
   const [msg, setMsg] = useState("");
   const [openId, setOpenId] = useState(null);
   const [pricingOpenId, setPricingOpenId] = useState(null);
   const [pricingForm, setPricingForm] = useState({});
-  const [decision, setDecision] = useState({ comment: "", visibility: "both" });
+  const [decision, setDecision] = useState({ comment: "", visibility: "both", file: null });
 
   useEffect(() => {
-    if (!isAdmin && clients.length === 1 && !form.clientId) {
+    if (!isAdmin && !isClient && clients.length === 1 && !form.clientId) {
       setForm((current) => ({ ...current, clientId: clients[0].id }));
     }
-  }, [isAdmin, clients.length, form.clientId]);
+    if (isClient && clientConsultants.length === 1 && !form.consultantId) {
+      setForm((current) => ({ ...current, consultantId: clientConsultants[0].id, clientId: profile.id }));
+    }
+  }, [isAdmin, isClient, clients.length, clientConsultants.length, form.clientId, form.consultantId]);
 
   async function createCra(e) {
     e.preventDefault();
     setMsg("");
 
     try {
-      const consultantId = isAdmin ? form.consultantId : profile.id;
+      const consultantId = isAdmin || isClient ? form.consultantId : profile.id;
+      const clientId = isClient ? profile.id : form.clientId;
       if (!consultantId) throw new Error("Sélectionne un consultant.");
-      if (!form.clientId) throw new Error("Sélectionne le client concerné par le CRA.");
+      if (!clientId) throw new Error("Sélectionne le client concerné par le CRA.");
+      if (isClient && !clientConsultants.some((c) => c.id === consultantId)) throw new Error("Ce consultant n’est pas affilié à ton compte client.");
+      if (!isAdmin && !isClient && !assignedClients.some((c) => c.id === clientId)) throw new Error("Ce client n’est pas affilié à ton compte consultant.");
 
       const { error } = await supabase.from("cra").insert({
         consultant_id: consultantId,
-        client_id: form.clientId,
+        client_id: clientId,
         month: `${form.month}-01`,
         worked_days: Number(form.workedDays || 0),
         extra_hours: Number(form.extraHours || 0),
@@ -722,35 +849,55 @@ function Cra({ profile, isAdmin, isClient, profiles, assignments, cras, onRefres
     }
   }
 
+  async function uploadDecisionAttachment(cra) {
+    if (!decision.file) return;
+    const ownerId = profile.id;
+    const sharedWithId = decision.visibility === "both" ? cra.consultant_id : null;
+    const fileName = decision.file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+    const title = `Pièce jointe CRA ${formatMonth(cra.month)} ${cra.consultant?.full_name || cra.consultant?.email || "consultant"}`;
+    const path = `${ownerId}/${Date.now()}-CRA-${cra.id}-${fileName}`;
+
+    const uploadResult = await supabase.storage.from(BUCKET).upload(path, decision.file, { upsert: false });
+    if (uploadResult.error) throw uploadResult.error;
+
+    const insertResult = await supabase.from("documents").insert({
+      owner_id: ownerId,
+      shared_with_id: sharedWithId,
+      title,
+      document_type: "cra",
+      file_path: path,
+    });
+    if (insertResult.error) throw insertResult.error;
+  }
+
   async function decide(cra, status) {
     setMsg("");
-    const { error } = await supabase.from("cra").update({
-      status,
-      client_comment: decision.comment || null,
-      client_comment_visibility: decision.visibility,
-      validated_at: new Date().toISOString(),
-      validated_by: profile.id,
-    }).eq("id", cra.id);
+    try {
+      const { error } = await supabase.from("cra").update({
+        status,
+        client_comment: decision.comment || null,
+        client_comment_visibility: decision.visibility,
+        validated_at: new Date().toISOString(),
+        validated_by: profile.id,
+      }).eq("id", cra.id);
 
-    if (error) {
+      if (error) throw error;
+      await uploadDecisionAttachment(cra);
+      setMsg(status === "approved" ? "CRA validé." : "CRA refusé.");
+      setOpenId(null);
+      setDecision({ comment: "", visibility: "both", file: null });
+      await onRefresh();
+    } catch (error) {
       setMsg(error.message || "Action impossible.");
-      return;
     }
-
-    setMsg(status === "approved" ? "CRA validé." : "CRA refusé.");
-    setOpenId(null);
-    setDecision({ comment: "", visibility: "both" });
-    await onRefresh();
   }
 
   function openPricing(cra) {
     setPricingOpenId(pricingOpenId === cra.id ? null : cra.id);
     setPricingForm({
       extra_hours_rate: cra.extra_hours_rate ?? 44.64,
-      saturday_rate: cra.saturday_rate ?? 223.21,
       worked_days: cra.worked_days ?? 0,
       extra_hours: cra.extra_hours ?? 0,
-      saturday_days: cra.saturday_days ?? 0,
     });
   }
 
@@ -791,50 +938,61 @@ function Cra({ profile, isAdmin, isClient, profiles, assignments, cras, onRefres
     }
   }
 
+  const noClientForConsultant = !isAdmin && !isClient && clients.length === 0;
+  const noConsultantForClient = isClient && clientConsultants.length === 0;
+
   return (
     <section className="mt-6 space-y-6">
-      {!isClient && (
-        <div className="rounded-[2rem] bg-white p-6 shadow-sm">
-          <h2 className="text-2xl font-black">{isAdmin ? "Créer un CRA pour un consultant" : "Créer mon CRA"}</h2>
-          {!isAdmin && <p className="mt-2 text-sm text-slate-600">Renseigne uniquement le nombre de jours travaillés et le nombre d’heures supplémentaires du mois. Les taux et prix sont gérés par l’administrateur.</p>}
-          {!isAdmin && clients.length === 0 && (
-            <Alert>Aucun client n’est encore affilié à ton compte. Demande à l’administrateur de t’affilier à un client avant de créer un CRA.</Alert>
+      {isClient && (
+        <Panel title="Consultants affiliés" subtitle="Tu peux créer et suivre des CRA séparés pour chaque consultant affilié à ton compte.">
+          {clientConsultants.length === 0 ? <Empty text="Aucun consultant affilié." /> : (
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              {clientConsultants.map((c) => (
+                <div key={c.id} className="rounded-2xl bg-slate-50 p-4">
+                  <b>{c.full_name || c.email}</b>
+                  <p className="mt-1 text-sm text-slate-600">{c.email}</p>
+                </div>
+              ))}
+            </div>
           )}
-          <form onSubmit={createCra} className="mt-6 grid gap-4 md:grid-cols-4">
-            {isAdmin && (
-              <Select label="Consultant" value={form.consultantId} onChange={(v) => setForm({ ...form, consultantId: v })}>
-                <option value="">Sélectionner</option>
-                {consultants.map((p) => <option key={p.id} value={p.id}>{p.full_name || p.email}</option>)}
-              </Select>
-            )}
+        </Panel>
+      )}
 
+      <div className="rounded-[2rem] bg-white p-6 shadow-sm">
+        <h2 className="text-2xl font-black">{isAdmin ? "Créer un CRA pour un consultant" : isClient ? "Créer un CRA pour un consultant" : "Créer mon CRA"}</h2>
+        {!isAdmin && <p className="mt-2 text-sm text-slate-600">Renseigne uniquement le nombre de jours travaillés et le nombre d’heures supplémentaires du mois. Les taux et prix sont gérés par l’administrateur.</p>}
+        {noClientForConsultant && <Alert>Aucun client n’est encore affilié à ton compte. Demande à l’administrateur de t’affilier à un client avant de créer un CRA.</Alert>}
+        {noConsultantForClient && <Alert>Aucun consultant n’est encore affilié à ton compte client.</Alert>}
+
+        <form onSubmit={createCra} className="mt-6 grid gap-4 md:grid-cols-4">
+          {(isAdmin || isClient) && (
+            <Select label="Consultant" value={form.consultantId} onChange={(v) => setForm({ ...form, consultantId: v })}>
+              <option value="">Sélectionner un consultant</option>
+              {consultantsForForm.map((p) => <option key={p.id} value={p.id}>{p.full_name || p.email}</option>)}
+            </Select>
+          )}
+
+          {!isClient && (
             <Select label="Client" value={form.clientId} onChange={(v) => setForm({ ...form, clientId: v })}>
               <option value="">Sélectionner un client</option>
               {clients.map((p) => <option key={p.id} value={p.id}>{p.full_name || p.email}</option>)}
             </Select>
+          )}
 
-            <Input label="Mois" type="month" value={form.month} onChange={(v) => setForm({ ...form, month: v })} />
-            {isAdmin ? (
-              <>
-                <Input label="Jours travaillés" type="number" value={form.workedDays} onChange={(v) => setForm({ ...form, workedDays: v })} />
-                <Input label="Heures supp" type="number" value={form.extraHours} onChange={(v) => setForm({ ...form, extraHours: v })} />
-                <Input label="Taux heure supp HT" type="number" value={form.extraHoursRate} onChange={(v) => setForm({ ...form, extraHoursRate: v })} />
-              </>
-            ) : (
-              <>
-                <Input label="Nombre de jours travaillés dans le mois" type="number" value={form.workedDays} onChange={(v) => setForm({ ...form, workedDays: v })} />
-                <Input label="Nombre d’heures supp dans le mois" type="number" value={form.extraHours} onChange={(v) => setForm({ ...form, extraHours: v })} />
-              </>
-            )}
+          {isClient && <Info label="Client" value={profile.full_name || profile.email} />}
 
-            <div className="flex items-end">
-              <button disabled={!isAdmin && clients.length === 0} className="w-full rounded-full bg-blue-700 px-6 py-3 font-bold text-white disabled:opacity-50">Créer</button>
-            </div>
-          </form>
-        </div>
-      )}
+          <Input label="Mois" type="month" value={form.month} onChange={(v) => setForm({ ...form, month: v })} />
+          <Input label="Nombre de jours travaillés dans le mois" type="number" value={form.workedDays} onChange={(v) => setForm({ ...form, workedDays: v })} />
+          <Input label="Nombre d’heures supp dans le mois" type="number" value={form.extraHours} onChange={(v) => setForm({ ...form, extraHours: v })} />
+          {isAdmin && <Input label="Taux heure supp HT" type="number" value={form.extraHoursRate} onChange={(v) => setForm({ ...form, extraHoursRate: v })} />}
 
-      <Panel title="CRA" subtitle="Suivi global des CRA et validations.">
+          <div className="flex items-end">
+            <button disabled={noClientForConsultant || noConsultantForClient} className="w-full rounded-full bg-blue-700 px-6 py-3 font-bold text-white disabled:opacity-50">Créer</button>
+          </div>
+        </form>
+      </div>
+
+      <Panel title="CRA" subtitle="Suivi global des CRA et validations, séparé par consultant et client.">
         {msg && <Alert>{msg}</Alert>}
 
         <div className="mt-6 overflow-hidden rounded-3xl border border-slate-100">
@@ -864,11 +1022,9 @@ function Cra({ profile, isAdmin, isClient, profiles, assignments, cras, onRefres
                 {isAdmin && pricingOpenId === c.id && (
                   <div className="mx-5 mb-5 rounded-3xl bg-slate-50 p-5">
                     <h3 className="text-lg font-black">Informations de facturation admin</h3>
-                    <p className="mt-1 text-sm text-slate-600">
-                      Ces montants ne sont visibles que par l’administrateur. Le consultant ne voit pas les taux.
-                    </p>
+                    <p className="mt-1 text-sm text-slate-600">Ces montants ne sont visibles que par l’administrateur. Le consultant ne voit pas les taux.</p>
 
-                    <div className="mt-4 grid gap-4 md:grid-cols-5">
+                    <div className="mt-4 grid gap-4 md:grid-cols-3">
                       <Input label="Jours" type="number" value={pricingForm.worked_days} onChange={(v) => setPricingForm({ ...pricingForm, worked_days: v })} />
                       <Input label="Heures supp" type="number" value={pricingForm.extra_hours} onChange={(v) => setPricingForm({ ...pricingForm, extra_hours: v })} />
                       <Input label="Taux heure supp HT" type="number" value={pricingForm.extra_hours_rate} onChange={(v) => setPricingForm({ ...pricingForm, extra_hours_rate: v })} />
@@ -888,10 +1044,15 @@ function Cra({ profile, isAdmin, isClient, profiles, assignments, cras, onRefres
                       <textarea value={decision.comment} onChange={(e) => setDecision({ ...decision, comment: e.target.value })} className="min-h-24 w-full rounded-2xl border px-4 py-3" />
                     </label>
 
-                    <Select label="Qui peut voir le commentaire ?" value={decision.visibility} onChange={(v) => setDecision({ ...decision, visibility: v })}>
+                    <Select label="Qui peut voir le commentaire et la pièce jointe ?" value={decision.visibility} onChange={(v) => setDecision({ ...decision, visibility: v })}>
                       <option value="both">Admin + consultant</option>
                       <option value="admin_only">Admin uniquement</option>
                     </Select>
+
+                    <label className="mt-4 block">
+                      <span className="mb-2 block text-sm font-bold text-slate-700">Pièce jointe facultative PDF / image</span>
+                      <input type="file" accept="application/pdf,image/*" onChange={(e) => setDecision({ ...decision, file: e.target.files?.[0] || null })} className="w-full rounded-2xl border px-4 py-3" />
+                    </label>
 
                     <div className="mt-4 flex flex-wrap gap-3">
                       <button onClick={() => decide(c, "approved")} className="rounded-full bg-green-600 px-5 py-3 font-bold text-white">Valider</button>
@@ -912,6 +1073,7 @@ function Cra({ profile, isAdmin, isClient, profiles, assignments, cras, onRefres
 function Invoices({ profile, profiles, cras, invoices, purchaseOrders, onRefresh }) {
   const approved = cras.filter((c) => c.status === "approved");
   const clients = profiles.filter((p) => p.role === "client");
+  const consultants = profiles.filter((p) => p.role === "consultant");
   const [selectedId, setSelectedId] = useState("");
   const selected = approved.find((c) => c.id === selectedId) || approved[0] || null;
   const [selectedPoId, setSelectedPoId] = useState("");
@@ -926,22 +1088,28 @@ function Invoices({ profile, profiles, cras, invoices, purchaseOrders, onRefresh
     clientEmail: "",
     clientRef: "",
     purchaseOrder: "",
-    paymentTerms: "Dans un délai de 30 jours",
+    paymentTerms: "Règlement à 30 jours fin de mois",
     dailyRate: 250,
     extraHourRate: 230,
     vatRate: 20,
   });
   const [poForm, setPoForm] = useState({
+    consultantId: "",
     clientId: "",
     orderNumber: "",
+    supplierRef: "",
+    supplierCode: "",
+    orderDate: new Date().toISOString().slice(0, 10),
+    endDate: "",
     clientName: "",
     clientAddress: "",
     clientEmail: "",
     clientRef: "",
-    paymentTerms: "Dans un délai de 30 jours",
+    paymentTerms: "Règlement à 30 jours fin de mois",
     dailyRate: 250,
     extraHourRate: 230,
     vatRate: 20,
+    file: null,
   });
 
   useEffect(() => {
@@ -957,13 +1125,25 @@ function Invoices({ profile, profiles, cras, invoices, purchaseOrders, onRefresh
       clientEmail: selected.client?.email || p.clientEmail,
       clientRef: clientName || p.clientRef,
     }));
-
+    setSelectedPoId("");
     setDocumentTitle(defaultInvoiceDocumentTitle(selected));
   }, [selected?.id]);
 
   const purchaseOrdersForCra = selected?.client_id
-    ? purchaseOrders.filter((po) => po.client_id === selected.client_id)
-    : purchaseOrders;
+    ? purchaseOrders.filter((po) =>
+        po.client_id === selected.client_id
+        && (!po.consultant_id || po.consultant_id === selected.consultant_id)
+        && isPurchaseOrderValidForMonth(po, selected.month)
+      )
+    : [];
+
+  const expiredPurchaseOrdersForCra = selected?.client_id
+    ? purchaseOrders.filter((po) =>
+        po.client_id === selected.client_id
+        && (!po.consultant_id || po.consultant_id === selected.consultant_id)
+        && !isPurchaseOrderValidForMonth(po, selected.month)
+      )
+    : [];
 
   const invoice = selected ? makeInvoice(selected, form) : null;
 
@@ -973,6 +1153,10 @@ function Invoices({ profile, profiles, cras, invoices, purchaseOrders, onRefresh
 
   function applyPurchaseOrder(po) {
     if (!po) return;
+    if (selected && !isPurchaseOrderValidForMonth(po, selected.month)) {
+      setMsg(`Le bon de commande ${po.order_number} est expiré pour ${formatMonth(selected.month)}. Il faut un nouveau bon de commande.`);
+      return;
+    }
     const clientName = po.client_name || po.client?.full_name || po.client?.email || "";
     setSelectedPoId(po.id);
     setForm((p) => ({
@@ -982,7 +1166,7 @@ function Invoices({ profile, profiles, cras, invoices, purchaseOrders, onRefresh
       clientEmail: po.client_email || po.client?.email || "",
       clientRef: po.client_ref || clientName,
       purchaseOrder: po.order_number || "",
-      paymentTerms: po.payment_terms || "Dans un délai de 30 jours",
+      paymentTerms: po.payment_terms || "Règlement à 30 jours fin de mois",
       dailyRate: po.daily_rate ?? p.dailyRate,
       extraHourRate: po.extra_hour_rate ?? p.extraHourRate,
       vatRate: po.vat_rate ?? p.vatRate,
@@ -994,41 +1178,80 @@ function Invoices({ profile, profiles, cras, invoices, purchaseOrders, onRefresh
     setPoMsg("");
 
     try {
+      if (!poForm.consultantId) throw new Error("Sélectionne le consultant lié au bon de commande.");
       if (!poForm.clientId) throw new Error("Sélectionne le client lié au bon de commande.");
       if (!poForm.orderNumber.trim()) throw new Error("Le numéro de bon de commande est obligatoire.");
+      if (!poForm.endDate) throw new Error("La date de fin / péremption du bon de commande est obligatoire.");
+      if (!poForm.file) throw new Error("Le bon de commande papier/PDF est obligatoire.");
 
       const selectedClient = selectedClientFromPoForm();
       const fallbackName = selectedClient?.full_name || selectedClient?.email || "";
       const fallbackEmail = selectedClient?.email || "";
+      const clientName = poForm.clientName.trim() || fallbackName;
+      const fileName = poForm.file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+      const path = `${poForm.clientId}/${Date.now()}-BDC-${poForm.orderNumber.trim()}-${fileName}`;
 
-      const { error } = await supabase.from("purchase_orders").insert({
+      const uploadResult = await supabase.storage.from(BUCKET).upload(path, poForm.file, { upsert: false });
+      if (uploadResult.error) throw uploadResult.error;
+
+      const docResult = await supabase.from("documents").insert({
+        owner_id: poForm.clientId,
+        shared_with_id: poForm.consultantId,
+        title: `Bon de commande ${poForm.orderNumber.trim()}`,
+        document_type: "bon_commande",
+        file_path: path,
+      }).select("id").single();
+      if (docResult.error) throw docResult.error;
+
+      const affiliationResult = await supabase.from("consultant_clients").upsert({
+        consultant_id: poForm.consultantId,
         client_id: poForm.clientId,
+      }, { onConflict: "consultant_id,client_id" });
+      if (affiliationResult.error) throw affiliationResult.error;
+
+      const { error } = await supabase.from("purchase_orders").upsert({
+        consultant_id: poForm.consultantId,
+        client_id: poForm.clientId,
+        document_id: docResult.data.id,
+        file_path: path,
         order_number: poForm.orderNumber.trim(),
-        client_name: poForm.clientName.trim() || fallbackName,
+        supplier_ref: poForm.supplierRef.trim() || null,
+        supplier_code: poForm.supplierCode.trim() || null,
+        order_date: poForm.orderDate || null,
+        end_date: poForm.endDate,
+        client_name: clientName,
         client_address: poForm.clientAddress.trim() || null,
         client_email: poForm.clientEmail.trim() || fallbackEmail,
-        client_ref: poForm.clientRef.trim() || (poForm.clientName.trim() || fallbackName),
-        payment_terms: poForm.paymentTerms.trim() || "Dans un délai de 30 jours",
+        client_ref: poForm.clientRef.trim() || clientName,
+        payment_terms: poForm.paymentTerms.trim() || "Règlement à 30 jours fin de mois",
         daily_rate: Number(poForm.dailyRate || 0),
         extra_hour_rate: Number(poForm.extraHourRate || 0),
         vat_rate: Number(poForm.vatRate || 0),
         created_by: profile.id,
-      });
+      }, { onConflict: "client_id,order_number" });
 
       if (error) throw error;
-      setPoMsg("Bon de commande enregistré.");
+      setPoMsg("Bon de commande enregistré avec document et affiliation.");
       setPoForm({
+        consultantId: "",
         clientId: "",
         orderNumber: "",
+        supplierRef: "",
+        supplierCode: "",
+        orderDate: new Date().toISOString().slice(0, 10),
+        endDate: "",
         clientName: "",
         clientAddress: "",
         clientEmail: "",
         clientRef: "",
-        paymentTerms: "Dans un délai de 30 jours",
+        paymentTerms: "Règlement à 30 jours fin de mois",
         dailyRate: 250,
         extraHourRate: 230,
         vatRate: 20,
+        file: null,
       });
+      const input = document.getElementById("po-file");
+      if (input) input.value = "";
       await onRefresh();
     } catch (error) {
       setPoMsg(error.message || "Impossible d’enregistrer le bon de commande.");
@@ -1052,6 +1275,17 @@ function Invoices({ profile, profiles, cras, invoices, purchaseOrders, onRefresh
   async function save() {
     if (!invoice || !selected) {
       setMsg("Aucun CRA validé sélectionné.");
+      return;
+    }
+
+    const selectedPo = purchaseOrders.find((po) => po.id === selectedPoId);
+    if (!selectedPo) {
+      setMsg("Sélectionne un bon de commande enregistré et valide pour ce mois.");
+      return;
+    }
+
+    if (!isPurchaseOrderValidForMonth(selectedPo, selected.month)) {
+      setMsg(`Le bon de commande ${selectedPo.order_number} est expiré pour ${formatMonth(selected.month)}. Il faut un nouveau bon de commande.`);
       return;
     }
 
@@ -1112,9 +1346,13 @@ function Invoices({ profile, profiles, cras, invoices, purchaseOrders, onRefresh
       <div className="space-y-6">
         <div className="rounded-[2rem] bg-white p-6 shadow-sm">
           <h2 className="text-2xl font-black">Préenregistrer un bon de commande</h2>
-          <p className="mt-2 text-sm text-slate-600">Le bon de commande préremplit le client, la référence client, le TJM et le taux d’heure supp.</p>
+          <p className="mt-2 text-sm text-slate-600">Le bon de commande PDF est obligatoire. Il préremplit le client, la référence, le TJM, le taux d’heure supp et la date de validité.</p>
 
           <form onSubmit={savePurchaseOrder} className="mt-6 space-y-4">
+            <Select label="Consultant" value={poForm.consultantId} onChange={(v) => setPoForm({ ...poForm, consultantId: v })}>
+              <option value="">Sélectionner un consultant</option>
+              {consultants.map((c) => <option key={c.id} value={c.id}>{c.full_name || c.email}</option>)}
+            </Select>
             <Select label="Client" value={poForm.clientId} onChange={(v) => {
               const client = clients.find((c) => c.id === v);
               setPoForm({
@@ -1129,29 +1367,38 @@ function Invoices({ profile, profiles, cras, invoices, purchaseOrders, onRefresh
               {clients.map((c) => <option key={c.id} value={c.id}>{c.full_name || c.email}</option>)}
             </Select>
             <Input label="N° bon de commande" value={poForm.orderNumber} onChange={(v) => setPoForm({ ...poForm, orderNumber: v })} />
+            <Input label="Réf client / contrat" value={poForm.clientRef} onChange={(v) => setPoForm({ ...poForm, clientRef: v })} />
+            <Input label="Réf fournisseur" value={poForm.supplierRef} onChange={(v) => setPoForm({ ...poForm, supplierRef: v })} />
+            <Input label="Code fournisseur" value={poForm.supplierCode} onChange={(v) => setPoForm({ ...poForm, supplierCode: v })} />
+            <Input label="Date commande" type="date" value={poForm.orderDate} onChange={(v) => setPoForm({ ...poForm, orderDate: v })} />
+            <Input label="Date fin / péremption" type="date" value={poForm.endDate} onChange={(v) => setPoForm({ ...poForm, endDate: v })} />
             <Input label="Client à facturer" value={poForm.clientName} onChange={(v) => setPoForm({ ...poForm, clientName: v })} />
             <label className="block">
               <span className="mb-2 block text-sm font-bold">Adresse client</span>
               <textarea value={poForm.clientAddress} onChange={(e) => setPoForm({ ...poForm, clientAddress: e.target.value })} className="min-h-24 w-full rounded-2xl border px-4 py-3" />
             </label>
             <Input label="Email client" value={poForm.clientEmail} onChange={(v) => setPoForm({ ...poForm, clientEmail: v })} />
-            <Input label="Réf client" value={poForm.clientRef} onChange={(v) => setPoForm({ ...poForm, clientRef: v })} />
             <Input label="Conditions" value={poForm.paymentTerms} onChange={(v) => setPoForm({ ...poForm, paymentTerms: v })} />
             <Input label="Prix journalier HT / TJM" type="number" value={poForm.dailyRate} onChange={(v) => setPoForm({ ...poForm, dailyRate: v })} />
             <Input label="Prix heure supp HT" type="number" value={poForm.extraHourRate} onChange={(v) => setPoForm({ ...poForm, extraHourRate: v })} />
             <Input label="TVA %" type="number" value={poForm.vatRate} onChange={(v) => setPoForm({ ...poForm, vatRate: v })} />
+            <label className="block">
+              <span className="mb-2 block text-sm font-bold text-slate-700">Bon de commande PDF obligatoire</span>
+              <input id="po-file" type="file" accept="application/pdf,image/*" onChange={(e) => setPoForm({ ...poForm, file: e.target.files?.[0] || null })} className="w-full rounded-2xl border px-4 py-3" />
+            </label>
 
             {poMsg && <Alert>{poMsg}</Alert>}
             <button className="w-full rounded-full bg-slate-950 px-6 py-3 font-bold text-white">Enregistrer le bon de commande</button>
           </form>
 
           <div className="mt-6 overflow-hidden rounded-3xl border border-slate-100">
-            <HeaderRow cols="md:grid-cols-4" values={["BDC", "Client", "TJM / H supp", "Action"]} />
+            <HeaderRow cols="md:grid-cols-5" values={["BDC", "Client", "Consultant", "Fin", "Action"]} />
             {purchaseOrders.length === 0 ? <Empty text="Aucun bon de commande enregistré." /> : purchaseOrders.map((po) => (
-              <div key={po.id} className="grid gap-3 border-t border-slate-100 px-5 py-4 md:grid-cols-4 md:items-center">
+              <div key={po.id} className="grid gap-3 border-t border-slate-100 px-5 py-4 md:grid-cols-5 md:items-center">
                 <b>{po.order_number}</b>
                 <span className="text-sm">{po.client_name || po.client?.full_name || po.client?.email || "-"}</span>
-                <span className="text-sm">{money(po.daily_rate)} / {money(po.extra_hour_rate)}</span>
+                <span className="text-sm">{po.consultant?.full_name || po.consultant?.email || "-"}</span>
+                <span className="text-sm">{formatDate(po.end_date)}</span>
                 <div className="flex flex-wrap gap-2">
                   <button type="button" onClick={() => applyPurchaseOrder(po)} className="rounded-full bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700">Appliquer</button>
                   <button type="button" onClick={() => deletePurchaseOrder(po)} className="rounded-full bg-red-50 px-4 py-2 text-sm font-bold text-red-700">Supprimer</button>
@@ -1163,7 +1410,7 @@ function Invoices({ profile, profiles, cras, invoices, purchaseOrders, onRefresh
 
         <div className="rounded-[2rem] bg-white p-6 shadow-sm">
           <h2 className="text-2xl font-black">Générer une facture</h2>
-          <p className="mt-2 text-sm text-slate-600">Depuis un CRA validé et un bon de commande.</p>
+          <p className="mt-2 text-sm text-slate-600">Depuis un CRA validé et un bon de commande encore valide pour le mois du CRA.</p>
 
           {approved.length === 0 ? (
             <div className="mt-6"><Alert>Aucun CRA validé disponible.</Alert></div>
@@ -1178,9 +1425,16 @@ function Invoices({ profile, profiles, cras, invoices, purchaseOrders, onRefresh
                 if (po) applyPurchaseOrder(po);
                 else setSelectedPoId("");
               }}>
-                <option value="">Sélectionner un bon de commande</option>
-                {purchaseOrdersForCra.map((po) => <option key={po.id} value={po.id}>{po.order_number} — {po.client_name || po.client?.full_name || po.client?.email}</option>)}
+                <option value="">Sélectionner un bon de commande valide</option>
+                {purchaseOrdersForCra.map((po) => <option key={po.id} value={po.id}>{po.order_number} — valable jusqu’au {formatDate(po.end_date)}</option>)}
               </Select>
+
+              {selected && purchaseOrdersForCra.length === 0 && (
+                <Alert>Aucun bon de commande valide pour {formatMonth(selected.month)}. Il faut enregistrer un nouveau bon de commande.</Alert>
+              )}
+              {expiredPurchaseOrdersForCra.length > 0 && (
+                <Alert>{expiredPurchaseOrdersForCra.length} bon(s) de commande existent mais sont expirés pour ce mois.</Alert>
+              )}
 
               <Input label="N° facture" value={form.number} onChange={(v) => setForm({ ...form, number: v })} />
               <Input label="Date facture" type="date" value={form.date} onChange={(v) => setForm({ ...form, date: v })} />
@@ -1586,6 +1840,15 @@ function formatDate(value) {
 function formatMonth(value) {
   if (!value) return "-";
   return new Date(value).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+}
+
+function isPurchaseOrderValidForMonth(po, monthValue) {
+  if (!po?.end_date || !monthValue) return false;
+  const monthStart = new Date(monthValue);
+  if (Number.isNaN(monthStart.getTime())) return false;
+  const monthEnd = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0);
+  const poEnd = new Date(po.end_date);
+  return poEnd >= monthEnd;
 }
 
 function money(value) {

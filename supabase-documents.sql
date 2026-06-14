@@ -1,12 +1,15 @@
--- LRN PORTAGE APP - Documents
+-- LRN PORTAGE APP - Documents V5.8.9
 create table if not exists public.documents (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null references public.profiles(id) on delete cascade,
+  shared_with_id uuid references public.profiles(id) on delete set null,
   title text not null,
   file_path text not null,
   document_type text not null default 'autre',
   created_at timestamptz not null default now()
 );
+
+alter table public.documents add column if not exists shared_with_id uuid references public.profiles(id) on delete set null;
 
 alter table public.documents enable row level security;
 
@@ -32,11 +35,19 @@ drop policy if exists "Documents delete access" on public.documents;
 
 create policy "Documents read access"
 on public.documents for select
-using (public.is_admin() or owner_id = auth.uid());
+using (
+  public.is_admin()
+  or owner_id = auth.uid()
+  or shared_with_id = auth.uid()
+);
 
 create policy "Documents insert access"
 on public.documents for insert
-with check (public.is_admin() or owner_id = auth.uid());
+with check (
+  public.is_admin()
+  or owner_id = auth.uid()
+  or shared_with_id = auth.uid()
+);
 
 create policy "Documents delete access"
 on public.documents for delete
@@ -54,6 +65,11 @@ using (
   and (
     public.is_admin()
     or split_part(name, '/', 1) = auth.uid()::text
+    or exists (
+      select 1 from public.documents d
+      where d.file_path = storage.objects.name
+      and d.shared_with_id = auth.uid()
+    )
   )
 );
 
