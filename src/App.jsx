@@ -196,6 +196,8 @@ function Dashboard({ session, profile, signOut }) {
   const [documents, setDocuments] = useState([]);
   const [cras, setCras] = useState([]);
   const [invoices, setInvoices] = useState([]);
+  const [purchaseOrders, setPurchaseOrders] = useState([]);
+  const [assignments, setAssignments] = useState([]);
   const [message, setMessage] = useState("");
   const isAdmin = profile.role === "admin";
   const isClient = profile.role === "client";
@@ -203,7 +205,7 @@ function Dashboard({ session, profile, signOut }) {
 
   async function refreshAll() {
     setMessage("");
-    await Promise.all([loadProfiles(), loadDocuments(), loadCras(), loadInvoices()]);
+    await Promise.all([loadProfiles(), loadDocuments(), loadCras(), loadInvoices(), loadPurchaseOrders(), loadAssignments()]);
   }
 
   useEffect(() => {
@@ -226,6 +228,25 @@ function Dashboard({ session, profile, signOut }) {
       return;
     }
     setProfiles(data || []);
+  }
+
+  async function loadAssignments() {
+    let query = supabase
+      .from("consultant_clients")
+      .select("id,consultant_id,client_id,created_at,consultant:consultant_id(id,email,full_name,role,created_at),client:client_id(id,email,full_name,role,created_at)")
+      .order("created_at", { ascending: false });
+
+    if (isConsultant) query = query.eq("consultant_id", profile.id);
+    if (isClient) query = query.eq("client_id", profile.id);
+
+    const { data, error } = await query;
+    if (error) {
+      setAssignments([]);
+      if (isAdmin || isConsultant) setMessage("Impossible de charger les affiliations consultants/clients. Relance supabase-affiliations.sql.");
+      return;
+    }
+
+    setAssignments(data || []);
   }
 
   async function loadDocuments() {
@@ -280,6 +301,25 @@ function Dashboard({ session, profile, signOut }) {
       return;
     }
     setInvoices(data || []);
+  }
+
+  async function loadPurchaseOrders() {
+    if (!isAdmin) {
+      setPurchaseOrders([]);
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("purchase_orders")
+      .select("id,client_id,order_number,client_name,client_address,client_email,client_ref,payment_terms,daily_rate,extra_hour_rate,vat_rate,created_at,client:client_id(id,email,full_name,role)")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      setMessage("Impossible de charger les bons de commande. Lance supabase-purchase-orders.sql.");
+      setPurchaseOrders([]);
+      return;
+    }
+    setPurchaseOrders(data || []);
   }
 
   const stats = {
@@ -343,7 +383,7 @@ function Dashboard({ session, profile, signOut }) {
         )}
 
         {tab === "profiles" && isAdmin && (
-          <Profiles profiles={profiles} onRefresh={loadProfiles} />
+          <Profiles profiles={profiles} assignments={assignments} onRefresh={refreshAll} />
         )}
 
         {tab === "documents" && (
@@ -362,21 +402,25 @@ function Dashboard({ session, profile, signOut }) {
             isAdmin={isAdmin}
             isClient={isClient}
             profiles={profiles}
+            assignments={assignments}
             cras={cras}
             onRefresh={loadCras}
           />
         )}
 
         {tab === "invoices" && isAdmin && (
-          <Invoices profile={profile} cras={cras} invoices={invoices} onRefresh={loadInvoices} />
+          <Invoices profile={profile} profiles={profiles} cras={cras} invoices={invoices} purchaseOrders={purchaseOrders} onRefresh={refreshAll} />
         )}
       </main>
     </div>
   );
 }
 
-function Profiles({ profiles, onRefresh }) {
+function Profiles({ profiles, assignments, onRefresh }) {
   const [msg, setMsg] = useState("");
+  const [linkForm, setLinkForm] = useState({ consultantId: "", clientId: "" });
+  const consultants = profiles.filter((p) => p.role === "consultant");
+  const clients = profiles.filter((p) => p.role === "client");
 
   async function changeRole(id, role) {
     setMsg("");
@@ -388,25 +432,97 @@ function Profiles({ profiles, onRefresh }) {
     await onRefresh();
   }
 
+  async function linkConsultantClient(e) {
+    e.preventDefault();
+    setMsg("");
+
+    if (!linkForm.consultantId || !linkForm.clientId) {
+      setMsg("Sélectionne un consultant et un client.");
+      return;
+    }
+
+    const { error } = await supabase.from("consultant_clients").insert({
+      consultant_id: linkForm.consultantId,
+      client_id: linkForm.clientId,
+    });
+
+    if (error) {
+      setMsg(error.message.includes("duplicate") ? "Cette affiliation existe déjà." : error.message);
+      return;
+    }
+
+    setMsg("Consultant affilié au client.");
+    setLinkForm({ consultantId: "", clientId: "" });
+    await onRefresh();
+  }
+
+  async function unlinkConsultantClient(id) {
+    if (!window.confirm("Supprimer cette affiliation consultant/client ?")) return;
+    setMsg("");
+
+    const { error } = await supabase.from("consultant_clients").delete().eq("id", id);
+
+    if (error) {
+      setMsg(error.message || "Impossible de supprimer l’affiliation.");
+      return;
+    }
+
+    setMsg("Affiliation supprimée.");
+    await onRefresh();
+  }
+
   return (
-    <Panel title="Gestion des profils" subtitle="Consulte les comptes créés et ajuste les rôles.">
-      {msg && <Alert>{msg}</Alert>}
-      <div className="mt-6 overflow-hidden rounded-3xl border border-slate-100">
-        <HeaderRow cols="md:grid-cols-4" values={["Nom", "Email", "Rôle", "ID"]} />
-        {profiles.map((p) => (
-          <div key={p.id} className="grid gap-3 border-t border-slate-100 px-5 py-4 md:grid-cols-4 md:items-center">
-            <b>{p.full_name || "Sans nom"}</b>
-            <span className="break-all text-sm">{p.email}</span>
-            <select value={p.role} onChange={(e) => changeRole(p.id, e.target.value)} className="w-fit rounded-full border bg-blue-50 px-3 py-2 text-sm font-bold text-blue-700">
-              <option value="consultant">Consultant</option>
-              <option value="client">Client</option>
-              <option value="admin">Admin</option>
-            </select>
-            <span className="break-all text-xs text-slate-500">{p.id}</span>
+    <section className="mt-6 space-y-6">
+      <Panel title="Gestion des profils" subtitle="Consulte les comptes créés et ajuste les rôles.">
+        {msg && <Alert>{msg}</Alert>}
+        <div className="mt-6 overflow-hidden rounded-3xl border border-slate-100">
+          <HeaderRow cols="md:grid-cols-4" values={["Nom", "Email", "Rôle", "ID"]} />
+          {profiles.map((p) => (
+            <div key={p.id} className="grid gap-3 border-t border-slate-100 px-5 py-4 md:grid-cols-4 md:items-center">
+              <b>{p.full_name || "Sans nom"}</b>
+              <span className="break-all text-sm">{p.email}</span>
+              <select value={p.role} onChange={(e) => changeRole(p.id, e.target.value)} className="w-fit rounded-full border bg-blue-50 px-3 py-2 text-sm font-bold text-blue-700">
+                <option value="consultant">Consultant</option>
+                <option value="client">Client</option>
+                <option value="admin">Admin</option>
+              </select>
+              <span className="break-all text-xs text-slate-500">{p.id}</span>
+            </div>
+          ))}
+        </div>
+      </Panel>
+
+      <Panel title="Affiliations consultants / clients" subtitle="Associe chaque consultant aux clients pour lesquels il peut déclarer un CRA.">
+        <form onSubmit={linkConsultantClient} className="grid gap-4 md:grid-cols-3">
+          <Select label="Consultant" value={linkForm.consultantId} onChange={(v) => setLinkForm({ ...linkForm, consultantId: v })}>
+            <option value="">Sélectionner un consultant</option>
+            {consultants.map((p) => <option key={p.id} value={p.id}>{p.full_name || p.email}</option>)}
+          </Select>
+
+          <Select label="Client" value={linkForm.clientId} onChange={(v) => setLinkForm({ ...linkForm, clientId: v })}>
+            <option value="">Sélectionner un client</option>
+            {clients.map((p) => <option key={p.id} value={p.id}>{p.full_name || p.email}</option>)}
+          </Select>
+
+          <div className="flex items-end">
+            <button className="w-full rounded-full bg-blue-700 px-6 py-3 font-bold text-white">Affilier</button>
           </div>
-        ))}
-      </div>
-    </Panel>
+        </form>
+
+        <div className="mt-6 overflow-hidden rounded-3xl border border-slate-100">
+          <HeaderRow cols="md:grid-cols-3" values={["Consultant", "Client", "Action"]} />
+          {assignments.length === 0 ? (
+            <Empty text="Aucune affiliation trouvée." />
+          ) : assignments.map((a) => (
+            <div key={a.id} className="grid gap-3 border-t border-slate-100 px-5 py-4 md:grid-cols-3 md:items-center">
+              <span className="text-sm font-semibold">{a.consultant?.full_name || a.consultant?.email || a.consultant_id}</span>
+              <span className="text-sm font-semibold">{a.client?.full_name || a.client?.email || a.client_id}</span>
+              <button onClick={() => unlinkConsultantClient(a.id)} className="w-fit rounded-full bg-red-50 px-4 py-2 text-sm font-bold text-red-700">Supprimer</button>
+            </div>
+          ))}
+        </div>
+      </Panel>
+    </section>
   );
 }
 
@@ -502,6 +618,7 @@ function Documents({ profile, isAdmin, profiles, documents, onRefresh }) {
             <option value="fiche_paie">Fiche de paie</option>
             <option value="justificatif">Justificatif</option>
             <option value="cra">CRA</option>
+            <option value="facture">Facture</option>
             <option value="autre">Autre</option>
           </Select>
 
@@ -547,9 +664,12 @@ function Documents({ profile, isAdmin, profiles, documents, onRefresh }) {
   );
 }
 
-function Cra({ profile, isAdmin, isClient, profiles, cras, onRefresh }) {
+function Cra({ profile, isAdmin, isClient, profiles, assignments, cras, onRefresh }) {
   const consultants = profiles.filter((p) => p.role === "consultant");
-  const clients = profiles.filter((p) => p.role === "client");
+  const assignedClients = assignments
+    .filter((a) => a.consultant_id === profile.id && a.client)
+    .map((a) => a.client);
+  const clients = isAdmin ? profiles.filter((p) => p.role === "client") : assignedClients;
   const [form, setForm] = useState({
     consultantId: isAdmin ? "" : profile.id,
     clientId: "",
@@ -566,6 +686,12 @@ function Cra({ profile, isAdmin, isClient, profiles, cras, onRefresh }) {
   const [pricingForm, setPricingForm] = useState({});
   const [decision, setDecision] = useState({ comment: "", visibility: "both" });
 
+  useEffect(() => {
+    if (!isAdmin && clients.length === 1 && !form.clientId) {
+      setForm((current) => ({ ...current, clientId: clients[0].id }));
+    }
+  }, [isAdmin, clients.length, form.clientId]);
+
   async function createCra(e) {
     e.preventDefault();
     setMsg("");
@@ -573,10 +699,11 @@ function Cra({ profile, isAdmin, isClient, profiles, cras, onRefresh }) {
     try {
       const consultantId = isAdmin ? form.consultantId : profile.id;
       if (!consultantId) throw new Error("Sélectionne un consultant.");
+      if (!form.clientId) throw new Error("Sélectionne le client concerné par le CRA.");
 
       const { error } = await supabase.from("cra").insert({
         consultant_id: consultantId,
-        client_id: form.clientId || null,
+        client_id: form.clientId,
         month: `${form.month}-01`,
         worked_days: Number(form.workedDays || 0),
         extra_hours: Number(form.extraHours || 0),
@@ -670,6 +797,9 @@ function Cra({ profile, isAdmin, isClient, profiles, cras, onRefresh }) {
         <div className="rounded-[2rem] bg-white p-6 shadow-sm">
           <h2 className="text-2xl font-black">{isAdmin ? "Créer un CRA pour un consultant" : "Créer mon CRA"}</h2>
           {!isAdmin && <p className="mt-2 text-sm text-slate-600">Renseigne uniquement le nombre de jours travaillés et le nombre d’heures supplémentaires du mois. Les taux et prix sont gérés par l’administrateur.</p>}
+          {!isAdmin && clients.length === 0 && (
+            <Alert>Aucun client n’est encore affilié à ton compte. Demande à l’administrateur de t’affilier à un client avant de créer un CRA.</Alert>
+          )}
           <form onSubmit={createCra} className="mt-6 grid gap-4 md:grid-cols-4">
             {isAdmin && (
               <Select label="Consultant" value={form.consultantId} onChange={(v) => setForm({ ...form, consultantId: v })}>
@@ -678,8 +808,8 @@ function Cra({ profile, isAdmin, isClient, profiles, cras, onRefresh }) {
               </Select>
             )}
 
-            <Select label="Client facultatif" value={form.clientId} onChange={(v) => setForm({ ...form, clientId: v })}>
-              <option value="">Aucun</option>
+            <Select label="Client" value={form.clientId} onChange={(v) => setForm({ ...form, clientId: v })}>
+              <option value="">Sélectionner un client</option>
               {clients.map((p) => <option key={p.id} value={p.id}>{p.full_name || p.email}</option>)}
             </Select>
 
@@ -698,7 +828,7 @@ function Cra({ profile, isAdmin, isClient, profiles, cras, onRefresh }) {
             )}
 
             <div className="flex items-end">
-              <button className="w-full rounded-full bg-blue-700 px-6 py-3 font-bold text-white">Créer</button>
+              <button disabled={!isAdmin && clients.length === 0} className="w-full rounded-full bg-blue-700 px-6 py-3 font-bold text-white disabled:opacity-50">Créer</button>
             </div>
           </form>
         </div>
@@ -779,11 +909,14 @@ function Cra({ profile, isAdmin, isClient, profiles, cras, onRefresh }) {
   );
 }
 
-function Invoices({ profile, cras, invoices, onRefresh }) {
+function Invoices({ profile, profiles, cras, invoices, purchaseOrders, onRefresh }) {
   const approved = cras.filter((c) => c.status === "approved");
+  const clients = profiles.filter((p) => p.role === "client");
   const [selectedId, setSelectedId] = useState("");
   const selected = approved.find((c) => c.id === selectedId) || approved[0] || null;
+  const [selectedPoId, setSelectedPoId] = useState("");
   const [msg, setMsg] = useState("");
+  const [poMsg, setPoMsg] = useState("");
   const [documentTitle, setDocumentTitle] = useState("");
   const [form, setForm] = useState({
     number: invoiceNumber(),
@@ -795,6 +928,19 @@ function Invoices({ profile, cras, invoices, onRefresh }) {
     purchaseOrder: "",
     paymentTerms: "Dans un délai de 30 jours",
     dailyRate: 250,
+    extraHourRate: 230,
+    vatRate: 20,
+  });
+  const [poForm, setPoForm] = useState({
+    clientId: "",
+    orderNumber: "",
+    clientName: "",
+    clientAddress: "",
+    clientEmail: "",
+    clientRef: "",
+    paymentTerms: "Dans un délai de 30 jours",
+    dailyRate: 250,
+    extraHourRate: 230,
     vatRate: 20,
   });
 
@@ -804,16 +950,104 @@ function Invoices({ profile, cras, invoices, onRefresh }) {
 
   useEffect(() => {
     if (!selected) return;
+    const clientName = selected.client?.full_name || selected.client?.email || "";
     setForm((p) => ({
       ...p,
-      clientName: selected.client?.full_name || selected.client?.email || p.clientName,
+      clientName: clientName || p.clientName,
       clientEmail: selected.client?.email || p.clientEmail,
+      clientRef: clientName || p.clientRef,
     }));
 
     setDocumentTitle(defaultInvoiceDocumentTitle(selected));
   }, [selected?.id]);
 
+  const purchaseOrdersForCra = selected?.client_id
+    ? purchaseOrders.filter((po) => po.client_id === selected.client_id)
+    : purchaseOrders;
+
   const invoice = selected ? makeInvoice(selected, form) : null;
+
+  function selectedClientFromPoForm() {
+    return clients.find((c) => c.id === poForm.clientId) || null;
+  }
+
+  function applyPurchaseOrder(po) {
+    if (!po) return;
+    const clientName = po.client_name || po.client?.full_name || po.client?.email || "";
+    setSelectedPoId(po.id);
+    setForm((p) => ({
+      ...p,
+      clientName,
+      clientAddress: po.client_address || "",
+      clientEmail: po.client_email || po.client?.email || "",
+      clientRef: po.client_ref || clientName,
+      purchaseOrder: po.order_number || "",
+      paymentTerms: po.payment_terms || "Dans un délai de 30 jours",
+      dailyRate: po.daily_rate ?? p.dailyRate,
+      extraHourRate: po.extra_hour_rate ?? p.extraHourRate,
+      vatRate: po.vat_rate ?? p.vatRate,
+    }));
+  }
+
+  async function savePurchaseOrder(e) {
+    e.preventDefault();
+    setPoMsg("");
+
+    try {
+      if (!poForm.clientId) throw new Error("Sélectionne le client lié au bon de commande.");
+      if (!poForm.orderNumber.trim()) throw new Error("Le numéro de bon de commande est obligatoire.");
+
+      const selectedClient = selectedClientFromPoForm();
+      const fallbackName = selectedClient?.full_name || selectedClient?.email || "";
+      const fallbackEmail = selectedClient?.email || "";
+
+      const { error } = await supabase.from("purchase_orders").insert({
+        client_id: poForm.clientId,
+        order_number: poForm.orderNumber.trim(),
+        client_name: poForm.clientName.trim() || fallbackName,
+        client_address: poForm.clientAddress.trim() || null,
+        client_email: poForm.clientEmail.trim() || fallbackEmail,
+        client_ref: poForm.clientRef.trim() || (poForm.clientName.trim() || fallbackName),
+        payment_terms: poForm.paymentTerms.trim() || "Dans un délai de 30 jours",
+        daily_rate: Number(poForm.dailyRate || 0),
+        extra_hour_rate: Number(poForm.extraHourRate || 0),
+        vat_rate: Number(poForm.vatRate || 0),
+        created_by: profile.id,
+      });
+
+      if (error) throw error;
+      setPoMsg("Bon de commande enregistré.");
+      setPoForm({
+        clientId: "",
+        orderNumber: "",
+        clientName: "",
+        clientAddress: "",
+        clientEmail: "",
+        clientRef: "",
+        paymentTerms: "Dans un délai de 30 jours",
+        dailyRate: 250,
+        extraHourRate: 230,
+        vatRate: 20,
+      });
+      await onRefresh();
+    } catch (error) {
+      setPoMsg(error.message || "Impossible d’enregistrer le bon de commande.");
+    }
+  }
+
+  async function deletePurchaseOrder(po) {
+    if (!window.confirm(`Supprimer le bon de commande ${po.order_number} ?`)) return;
+    setPoMsg("");
+
+    const { error } = await supabase.from("purchase_orders").delete().eq("id", po.id);
+    if (error) {
+      setPoMsg(error.message || "Suppression du bon de commande impossible.");
+      return;
+    }
+
+    setPoMsg("Bon de commande supprimé.");
+    await onRefresh();
+  }
 
   async function save() {
     if (!invoice || !selected) {
@@ -822,7 +1056,12 @@ function Invoices({ profile, cras, invoices, onRefresh }) {
     }
 
     if (!form.purchaseOrder.trim()) {
-      setMsg("Le bon de commande est obligatoire pour générer la facture.");
+      setMsg("Le numéro du bon de commande est obligatoire pour générer la facture.");
+      return;
+    }
+
+    if (!selected.client_id) {
+      setMsg("Le CRA doit être lié à un client pour enregistrer la facture dans ses documents.");
       return;
     }
 
@@ -843,7 +1082,7 @@ function Invoices({ profile, cras, invoices, onRefresh }) {
 
     try {
       await saveInvoiceAsDocument(invoice, selected, data.id, documentTitle);
-      setMsg("Facture enregistrée et ajoutée dans les documents.");
+      setMsg("Facture enregistrée et ajoutée dans les documents du client.");
     } catch (documentError) {
       setMsg(`Facture enregistrée, mais impossible de l’ajouter aux documents : ${documentError.message}`);
     }
@@ -870,39 +1109,102 @@ function Invoices({ profile, cras, invoices, onRefresh }) {
 
   return (
     <section className="mt-6 grid gap-6 lg:grid-cols-[430px_1fr]">
-      <div className="rounded-[2rem] bg-white p-6 shadow-sm">
-        <h2 className="text-2xl font-black">Générer une facture</h2>
-        <p className="mt-2 text-sm text-slate-600">Depuis un CRA validé.</p>
+      <div className="space-y-6">
+        <div className="rounded-[2rem] bg-white p-6 shadow-sm">
+          <h2 className="text-2xl font-black">Préenregistrer un bon de commande</h2>
+          <p className="mt-2 text-sm text-slate-600">Le bon de commande préremplit le client, la référence client, le TJM et le taux d’heure supp.</p>
 
-        {approved.length === 0 ? (
-          <div className="mt-6"><Alert>Aucun CRA validé disponible.</Alert></div>
-        ) : (
-          <div className="mt-6 space-y-4">
-            <Select label="CRA validé" value={selectedId || selected?.id || ""} onChange={setSelectedId}>
-              {approved.map((c) => <option key={c.id} value={c.id}>{formatMonth(c.month)} — {c.consultant?.full_name || c.consultant?.email} — {c.worked_days} j</option>)}
+          <form onSubmit={savePurchaseOrder} className="mt-6 space-y-4">
+            <Select label="Client" value={poForm.clientId} onChange={(v) => {
+              const client = clients.find((c) => c.id === v);
+              setPoForm({
+                ...poForm,
+                clientId: v,
+                clientName: client?.full_name || client?.email || poForm.clientName,
+                clientEmail: client?.email || poForm.clientEmail,
+                clientRef: client?.full_name || client?.email || poForm.clientRef,
+              });
+            }}>
+              <option value="">Sélectionner un client</option>
+              {clients.map((c) => <option key={c.id} value={c.id}>{c.full_name || c.email}</option>)}
             </Select>
-
-            <Input label="N° facture" value={form.number} onChange={(v) => setForm({ ...form, number: v })} />
-            <Input label="Date facture" type="date" value={form.date} onChange={(v) => setForm({ ...form, date: v })} />
-            <Input label="Client à facturer" value={form.clientName} onChange={(v) => setForm({ ...form, clientName: v })} />
+            <Input label="N° bon de commande" value={poForm.orderNumber} onChange={(v) => setPoForm({ ...poForm, orderNumber: v })} />
+            <Input label="Client à facturer" value={poForm.clientName} onChange={(v) => setPoForm({ ...poForm, clientName: v })} />
             <label className="block">
               <span className="mb-2 block text-sm font-bold">Adresse client</span>
-              <textarea value={form.clientAddress} onChange={(e) => setForm({ ...form, clientAddress: e.target.value })} className="min-h-24 w-full rounded-2xl border px-4 py-3" />
+              <textarea value={poForm.clientAddress} onChange={(e) => setPoForm({ ...poForm, clientAddress: e.target.value })} className="min-h-24 w-full rounded-2xl border px-4 py-3" />
             </label>
-            <Input label="Email client" value={form.clientEmail} onChange={(v) => setForm({ ...form, clientEmail: v })} />
-            <Input label="Réf client" value={form.clientRef} onChange={(v) => setForm({ ...form, clientRef: v })} />
-            <Input label="Bon de commande obligatoire" value={form.purchaseOrder} onChange={(v) => setForm({ ...form, purchaseOrder: v })} />
-            <Input label="Conditions" value={form.paymentTerms} onChange={(v) => setForm({ ...form, paymentTerms: v })} />
-            <Input label="Prix journalier HT" type="number" value={form.dailyRate} onChange={(v) => setForm({ ...form, dailyRate: v })} />
-            <Input label="TVA %" type="number" value={form.vatRate} onChange={(v) => setForm({ ...form, vatRate: v })} />
-            <Input label="Nom du document facture" value={documentTitle} onChange={setDocumentTitle} />
+            <Input label="Email client" value={poForm.clientEmail} onChange={(v) => setPoForm({ ...poForm, clientEmail: v })} />
+            <Input label="Réf client" value={poForm.clientRef} onChange={(v) => setPoForm({ ...poForm, clientRef: v })} />
+            <Input label="Conditions" value={poForm.paymentTerms} onChange={(v) => setPoForm({ ...poForm, paymentTerms: v })} />
+            <Input label="Prix journalier HT / TJM" type="number" value={poForm.dailyRate} onChange={(v) => setPoForm({ ...poForm, dailyRate: v })} />
+            <Input label="Prix heure supp HT" type="number" value={poForm.extraHourRate} onChange={(v) => setPoForm({ ...poForm, extraHourRate: v })} />
+            <Input label="TVA %" type="number" value={poForm.vatRate} onChange={(v) => setPoForm({ ...poForm, vatRate: v })} />
 
-            {msg && <Alert>{msg}</Alert>}
+            {poMsg && <Alert>{poMsg}</Alert>}
+            <button className="w-full rounded-full bg-slate-950 px-6 py-3 font-bold text-white">Enregistrer le bon de commande</button>
+          </form>
 
-            <button onClick={save} className="w-full rounded-full bg-blue-700 px-6 py-3 font-bold text-white">Enregistrer la facture</button>
-            <button onClick={() => window.print()} className="w-full rounded-full bg-slate-950 px-6 py-3 font-bold text-white">Imprimer / Exporter PDF</button>
+          <div className="mt-6 overflow-hidden rounded-3xl border border-slate-100">
+            <HeaderRow cols="md:grid-cols-4" values={["BDC", "Client", "TJM / H supp", "Action"]} />
+            {purchaseOrders.length === 0 ? <Empty text="Aucun bon de commande enregistré." /> : purchaseOrders.map((po) => (
+              <div key={po.id} className="grid gap-3 border-t border-slate-100 px-5 py-4 md:grid-cols-4 md:items-center">
+                <b>{po.order_number}</b>
+                <span className="text-sm">{po.client_name || po.client?.full_name || po.client?.email || "-"}</span>
+                <span className="text-sm">{money(po.daily_rate)} / {money(po.extra_hour_rate)}</span>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => applyPurchaseOrder(po)} className="rounded-full bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700">Appliquer</button>
+                  <button type="button" onClick={() => deletePurchaseOrder(po)} className="rounded-full bg-red-50 px-4 py-2 text-sm font-bold text-red-700">Supprimer</button>
+                </div>
+              </div>
+            ))}
           </div>
-        )}
+        </div>
+
+        <div className="rounded-[2rem] bg-white p-6 shadow-sm">
+          <h2 className="text-2xl font-black">Générer une facture</h2>
+          <p className="mt-2 text-sm text-slate-600">Depuis un CRA validé et un bon de commande.</p>
+
+          {approved.length === 0 ? (
+            <div className="mt-6"><Alert>Aucun CRA validé disponible.</Alert></div>
+          ) : (
+            <div className="mt-6 space-y-4">
+              <Select label="CRA validé" value={selectedId || selected?.id || ""} onChange={(v) => { setSelectedId(v); setSelectedPoId(""); }}>
+                {approved.map((c) => <option key={c.id} value={c.id}>{formatMonth(c.month)} — {c.consultant?.full_name || c.consultant?.email} — {c.worked_days} j</option>)}
+              </Select>
+
+              <Select label="Bon de commande enregistré" value={selectedPoId} onChange={(v) => {
+                const po = purchaseOrders.find((item) => item.id === v);
+                if (po) applyPurchaseOrder(po);
+                else setSelectedPoId("");
+              }}>
+                <option value="">Sélectionner un bon de commande</option>
+                {purchaseOrdersForCra.map((po) => <option key={po.id} value={po.id}>{po.order_number} — {po.client_name || po.client?.full_name || po.client?.email}</option>)}
+              </Select>
+
+              <Input label="N° facture" value={form.number} onChange={(v) => setForm({ ...form, number: v })} />
+              <Input label="Date facture" type="date" value={form.date} onChange={(v) => setForm({ ...form, date: v })} />
+              <Input label="Client à facturer" value={form.clientName} onChange={(v) => setForm({ ...form, clientName: v })} />
+              <label className="block">
+                <span className="mb-2 block text-sm font-bold">Adresse client</span>
+                <textarea value={form.clientAddress} onChange={(e) => setForm({ ...form, clientAddress: e.target.value })} className="min-h-24 w-full rounded-2xl border px-4 py-3" />
+              </label>
+              <Input label="Email client" value={form.clientEmail} onChange={(v) => setForm({ ...form, clientEmail: v })} />
+              <Input label="Réf client" value={form.clientRef} onChange={(v) => setForm({ ...form, clientRef: v })} />
+              <Input label="N° bon de commande obligatoire" value={form.purchaseOrder} onChange={(v) => setForm({ ...form, purchaseOrder: v })} />
+              <Input label="Conditions" value={form.paymentTerms} onChange={(v) => setForm({ ...form, paymentTerms: v })} />
+              <Input label="Prix journalier HT / TJM" type="number" value={form.dailyRate} onChange={(v) => setForm({ ...form, dailyRate: v })} />
+              <Input label="Prix heure supp HT" type="number" value={form.extraHourRate} onChange={(v) => setForm({ ...form, extraHourRate: v })} />
+              <Input label="TVA %" type="number" value={form.vatRate} onChange={(v) => setForm({ ...form, vatRate: v })} />
+              <Input label="Nom du document facture" value={documentTitle} onChange={setDocumentTitle} />
+
+              {msg && <Alert>{msg}</Alert>}
+
+              <button onClick={save} className="w-full rounded-full bg-blue-700 px-6 py-3 font-bold text-white">Enregistrer la facture</button>
+              <button onClick={() => window.print()} className="w-full rounded-full bg-slate-950 px-6 py-3 font-bold text-white">Imprimer / Exporter PDF</button>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="space-y-6">
@@ -929,7 +1231,6 @@ function Invoices({ profile, cras, invoices, onRefresh }) {
     </section>
   );
 }
-
 
 function invoiceHtmlDocument(invoice) {
   const rows = invoice.lines.map((line) => `
@@ -965,7 +1266,7 @@ function invoiceHtmlDocument(invoice) {
 <body>
   <div class="top">
     <div>
-      <h2>LRN INFO</h2>
+      <h2>LRN PORTAGE</h2>
       <p><b>${escapeHtml(COMPANY.name)}</b><br>
       ${escapeHtml(COMPANY.address)}<br>
       Téléphone : ${escapeHtml(COMPANY.phone)}<br>
@@ -989,6 +1290,7 @@ function invoiceHtmlDocument(invoice) {
       <div class="blue">Conditions</div>
       <p><b>Réf client :</b> ${escapeHtml(invoice.clientRef || "-")}<br>
       <b>Bon de commande :</b> ${escapeHtml(invoice.purchaseOrder || "-")}<br>
+      <b>Consultant :</b> ${escapeHtml(invoice.consultant || "-")}<br>
       <b>Paiement :</b> ${escapeHtml(invoice.paymentTerms || "-")}<br>
       <b>TVA :</b> ${escapeHtml(COMPANY.vat)}</p>
     </div>
@@ -1064,7 +1366,7 @@ function InvoicePreview({ invoice }) {
     <div id="invoice-print" className="rounded-[2rem] bg-white p-8 shadow-sm">
       <div className="flex items-start justify-between gap-6">
         <div>
-          <h2 className="text-3xl font-black text-blue-800">LRN INFO</h2>
+          <h2 className="text-3xl font-black text-blue-800">LRN PORTAGE</h2>
           <p className="mt-2 text-sm font-bold">{COMPANY.name}</p>
           <p className="text-sm">{COMPANY.address}</p>
           <p className="text-sm">Téléphone : {COMPANY.phone}</p>
@@ -1091,6 +1393,7 @@ function InvoicePreview({ invoice }) {
           <div className="p-3 text-sm">
             <p><b>Réf client :</b> {invoice.clientRef || "-"}</p>
             <p><b>Bon de commande :</b> {invoice.purchaseOrder || "-"}</p>
+            <p><b>Consultant :</b> {invoice.consultant || "-"}</p>
             <p><b>Paiement :</b> {invoice.paymentTerms}</p>
             <p><b>TVA :</b> {COMPANY.vat}</p>
           </div>
@@ -1137,13 +1440,12 @@ function makeInvoice(cra, form) {
   const daily = Number(form.dailyRate || 0);
   const days = Number(cra.worked_days || 0);
   const extraHours = Number(cra.extra_hours || 0);
-  const extraRate = Number(cra.extra_hours_rate || 0);
-  const saturdayDays = Number(cra.saturday_days || 0);
-  const saturdayRate = Number(cra.saturday_rate || 0);
+  const extraRate = Number(form.extraHourRate || 0);
   const vatRate = Number(form.vatRate || 0);
+  const consultantName = cra.consultant?.full_name || cra.consultant?.email || "consultant";
 
   const lines = [
-    { description: `Prestation de conseil - ${formatMonth(cra.month)}`, quantity: days, unitPrice: daily, amount: days * daily },
+    { description: `Prestation de conseil - ${formatMonth(cra.month)} - ${consultantName}`, quantity: days, unitPrice: daily, amount: days * daily },
   ];
 
   if (extraHours > 0) lines.push({ description: "Heures supplémentaires", quantity: extraHours, unitPrice: extraRate, amount: extraHours * extraRate });
@@ -1156,7 +1458,8 @@ function makeInvoice(cra, form) {
     number: form.number,
     date: form.date,
     client: { name: form.clientName, address: form.clientAddress, email: form.clientEmail },
-    clientRef: form.clientRef,
+    consultant: consultantName,
+    clientRef: form.clientRef || form.clientName,
     purchaseOrder: form.purchaseOrder,
     paymentTerms: form.paymentTerms,
     vatRate,

@@ -8,8 +8,8 @@ transforming...
 [32m✓[39m 67 modules transformed.
 rendering chunks...
 computing gzip size...
-[2mdist/[22m[32mindex.html                 [39m[1m[2m  0.40 kB[22m[1m[22m[2m │ gzip:   0.27 kB[22m
-[2mdist/[22m[2massets/[22m[35mindex-n8tWOKV7.css  [39m[1m[2m 13.76 kB[22m[1m[22m[2m │ gzip:   3.43 kB[22m
-[2mdist/[22m[2massets/[22m[36mindex-3-Nus6ub.js   [39m[1m[2m393.40 kB[22m[1m[22m[2m │ gzip: 110.23 kB[22m
-[32m✓ built in 2.79s[39m
+[2mdist/[22m[32mindex.html                 [39m[1m[2m  0.40 kB[22m[1m[22m[2m │ gzip:   0.28 kB[22m
+[2mdist/[22m[2massets/[22m[35mindex-CMEDm2ZX.css  [39m[1m[2m 13.86 kB[22m[1m[22m[2m │ gzip:   3.44 kB[22m
+[2mdist/[22m[2massets/[22m[36mindex-D_e_nPN5.js   [39m[1m[2m404.17 kB[22m[1m[22m[2m │ gzip: 112.15 kB[22m
+[32m✓ built in 2.75s[39m
 

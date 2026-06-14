@@ -62,3 +62,19 @@ Relancer dans SQL Editor, dans cet ordre :
 - CRA consultant : saisie limitée aux jours travaillés et aux heures supplémentaires du mois.
 - Facture : le document est enregistré directement dans les documents du client du CRA.
 - Facture : nom de document par défaut “Facture mois année nom prénom consultant”, modifiable avant enregistrement.
+
+
+## V5.8.7
+- Admin : ajout du module “Affiliations consultants / clients” dans Gestion des profils.
+- Consultant : le champ Client du CRA n’est plus facultatif.
+- Consultant : la liste des clients affichée dans le CRA est limitée aux clients affiliés par l’admin.
+- SQL : ajouter et lancer `supabase-affiliations.sql` après les scripts existants.
+
+
+## V5.8.8
+- Facture : logo/titre corrigé en LRN PORTAGE.
+- Facture : affichage du consultant concerné.
+- Facture : prix journalier HT et prix heure supp HT séparés.
+- Bons de commande : préenregistrement admin avec client, référence, conditions, TJM, taux heure supp et TVA.
+- Génération facture : sélection du bon de commande pour préremplir les champs.
+- Nouveau script SQL : supabase-purchase-orders.sql.
