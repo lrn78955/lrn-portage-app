@@ -7,6 +7,10 @@ create table if not exists public.cra (
   client_id uuid references public.profiles(id) on delete set null,
   month date not null,
   worked_days numeric(5,2) not null default 0,
+  extra_hours numeric(6,2) not null default 0,
+  extra_hours_rate numeric(10,2) not null default 44.64,
+  saturday_days numeric(6,2) not null default 0,
+  saturday_rate numeric(10,2) not null default 223.21,
   consultant_comment text,
   client_comment text,
   client_comment_visibility text not null default 'both'
@@ -82,4 +86,23 @@ create policy "CRA delete access"
 on public.cra for delete
 using (
   public.is_admin()
+  or auth.uid() = consultant_id
+);
+
+
+-- V5.2 - Heures supplémentaires / samedis dans le CRA
+alter table public.cra add column if not exists extra_hours numeric(6,2) not null default 0;
+alter table public.cra add column if not exists extra_hours_rate numeric(10,2) not null default 44.64;
+alter table public.cra add column if not exists saturday_days numeric(6,2) not null default 0;
+alter table public.cra add column if not exists saturday_rate numeric(10,2) not null default 223.21;
+
+
+-- V5.3 - Suppression CRA par admin ou consultant propriétaire
+drop policy if exists "CRA delete access" on public.cra;
+
+create policy "CRA delete access"
+on public.cra for delete
+using (
+  public.is_admin()
+  or auth.uid() = consultant_id
 );
