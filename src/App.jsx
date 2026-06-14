@@ -707,6 +707,12 @@ function DocumentsManager({ currentProfile, isAdmin = false, readOnly = false, p
           <TabButton active={filter === "cra"} onClick={() => setFilter("cra")}>CRA</TabButton>
         </div>
 
+        {craMessage && (
+          <div className="mt-4">
+            <Alert>{craMessage}</Alert>
+          </div>
+        )}
+
         <div className="mt-6 overflow-hidden rounded-3xl border border-slate-100">
           <div className="hidden grid-cols-5 bg-slate-50 px-5 py-4 text-xs font-bold uppercase tracking-wide text-slate-500 md:grid">
             <span>Titre</span>
@@ -1027,6 +1033,31 @@ function CraManager({ currentProfile, profiles = [], cras, loading, onRefresh, m
     }
   }
 
+  async function deleteCra(cra) {
+    const confirmed = window.confirm(`Supprimer le CRA de ${formatMonth(cra.month)} ?`);
+    if (!confirmed) return;
+
+    setSaving(true);
+    setCraMessage("");
+
+    try {
+      const { error } = await supabase
+        .from("cra")
+        .delete()
+        .eq("id", cra.id);
+
+      if (error) throw error;
+
+      setCraMessage("CRA supprimé avec succès.");
+      setActiveActionId(null);
+      await onRefresh();
+    } catch (error) {
+      setCraMessage(error.message || "Impossible de supprimer le CRA.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const visibleCras = cras.filter((cra) => filter === "all" ? true : cra.status === filter);
 
   return (
@@ -1135,10 +1166,13 @@ function CraManager({ currentProfile, profiles = [], cras, loading, onRefresh, m
   );
 }
 
-function CraRow({ cra, mode, activeActionId, setActiveActionId, actionForm, setActionForm, onDecision, saving }) {
+function CraRow({ cra, mode, profiles = [], activeActionId, setActiveActionId, actionForm, setActionForm, onDecision, onAssignClient, onDeleteCra, saving }) {
   const isClient = mode === "client";
   const isAdmin = mode === "admin";
+  const clients = profiles.filter((profile) => profile.role === "client");
+  const isConsultant = mode === "consultant";
   const canDecide = (isClient || isAdmin) && cra.status === "submitted";
+  const canDelete = isAdmin || isConsultant;
   const consultantName = cra.consultant?.full_name || cra.consultant?.email || "Consultant";
   const clientName = cra.client?.full_name || cra.client?.email || "Aucun client";
   const canSeeClientComment = isAdmin || cra.client_comment_visibility === "both";
@@ -1159,9 +1193,26 @@ function CraRow({ cra, mode, activeActionId, setActiveActionId, actionForm, setA
           {!cra.consultant_comment && !cra.client_comment && <p className="text-slate-400">Aucun</p>}
         </div>
         <div className="flex flex-wrap gap-2">
-          {canDecide ? (
-            <button onClick={() => setActiveActionId(showActionForm ? null : cra.id)} className="rounded-full bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100">Traiter</button>
-          ) : <span className="text-sm text-slate-400">—</span>}
+          {canDecide && (
+            <button
+              onClick={() => setActiveActionId(showActionForm ? null : cra.id)}
+              className="rounded-full bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+            >
+              Traiter
+            </button>
+          )}
+
+          {canDelete && (
+            <button
+              onClick={() => onDeleteCra?.(cra)}
+              disabled={saving}
+              className="rounded-full bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-100 disabled:opacity-60"
+            >
+              Supprimer
+            </button>
+          )}
+
+          {!canDecide && !canDelete && <span className="text-sm text-slate-400">—</span>}
         </div>
       </div>
 
