@@ -1,19 +1,20 @@
-import React, { useEffect, useMemo, useState } from "react";
+
+import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const supabase = SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-const DOCUMENT_BUCKET = "documents";
+const BUCKET = "documents";
 
-const roleLabels = {
-  admin: "Administrateur",
+const roles = {
   consultant: "Consultant",
-  client: "Entreprise / Client",
+  client: "Client",
+  admin: "Administrateur",
 };
 
-const docTypeLabels = {
+const docTypes = {
   contrat: "Contrat",
   fiche_paie: "Fiche de paie",
   justificatif: "Justificatif",
@@ -21,120 +22,88 @@ const docTypeLabels = {
   autre: "Autre",
 };
 
-const craStatusLabels = {
+const statuses = {
   draft: "Brouillon",
   submitted: "Soumis",
   approved: "Validé",
   rejected: "Refusé",
 };
 
-const commentVisibilityLabels = {
-  admin_only: "Admin uniquement",
-  both: "Admin + consultant",
-};
-
-const COMPANY_INVOICE_INFO = {
+const COMPANY = {
   name: "LRN PORTAGE",
-  legalName: "LRN PORTAGE",
   address: "18 RUE DE LA BRUYERE, 78300 POISSY",
   phone: "06.34.38.30.78",
   email: "lrninfo78@gmail.com",
   siret: "104 387 105 00018",
-  vatNumber: "FR28104387105",
+  vat: "FR28104387105",
   iban: "FR42 3000 2023 3600 0024 8787 T61",
   bic: "CRLYFRPP",
 };
 
 export default function App() {
   const [session, setSession] = useState(null);
-  const [ready, setReady] = useState(false);
-  const [view, setView] = useState("login");
   const [profile, setProfile] = useState(null);
-  const [message, setMessage] = useState("");
+  const [authMode, setAuthMode] = useState("login");
+  const [authMessage, setAuthMessage] = useState("");
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!supabase) {
-      setReady(true);
-      return;
-    }
-
     supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setReady(true);
+      setSession(data.session || null);
+      setLoading(false);
     });
 
-    const { data } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      setSession(newSession);
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession || null);
     });
 
-    return () => data.subscription.unsubscribe();
+    return () => listener.subscription.unsubscribe();
   }, []);
 
   useEffect(() => {
-    if (!supabase || !session?.user) {
+    if (!session?.user?.id) {
       setProfile(null);
       return;
     }
-    loadProfile(session.user);
-  }, [session]);
+    loadMyProfile();
+  }, [session?.user?.id]);
 
-  async function loadProfile(user) {
-    setMessage("");
-
+  async function loadMyProfile() {
     const { data, error } = await supabase
       .from("profiles")
-      .select("*")
-      .eq("id", user.id)
+      .select("id,email,full_name,role,created_at")
+      .eq("id", session.user.id)
       .maybeSingle();
 
     if (error) {
-      setMessage("Table profiles introuvable ou accès refusé. Vérifie les scripts SQL Supabase.");
+      setAuthMessage("Impossible de charger ton profil. Vérifie supabase-schema/documents.");
       return;
     }
-
-    if (data) {
-      setProfile(data);
-      return;
-    }
-
-    const newProfile = {
-      id: user.id,
-      email: user.email,
-      full_name: user.user_metadata?.full_name || "",
-      role: user.user_metadata?.role || "consultant",
-    };
-
-    const { data: created, error: createError } = await supabase
-      .from("profiles")
-      .insert(newProfile)
-      .select("*")
-      .single();
-
-    if (createError) {
-      setMessage("Impossible de créer le profil. Vérifie les règles RLS Supabase.");
-      return;
-    }
-
-    setProfile(created);
+    setProfile(data);
   }
 
   async function signOut() {
     await supabase.auth.signOut();
+    setSession(null);
     setProfile(null);
-    setView("login");
   }
 
-  if (!supabase) return <ConfigMissing />;
-  if (!ready) return <Loader text="Chargement..." />;
-  if (!session) return <Auth view={view} setView={setView} message={message} setMessage={setMessage} />;
+  if (loading) return <FullPage text="Chargement..." />;
 
-  return <Dashboard session={session} profile={profile} message={message} signOut={signOut} />;
+  if (!session) {
+    return <AuthScreen mode={authMode} setMode={setAuthMode} message={authMessage} setMessage={setAuthMessage} />;
+  }
+
+  if (!profile) return <FullPage text="Chargement du profil..." />;
+
+  return (
+    <Dashboard session={session} profile={profile} signOut={signOut} />
+  );
 }
 
-function Auth({ view, setView, message, setMessage }) {
-  const isLogin = view === "login";
-  const [loading, setLoading] = useState(false);
+function AuthScreen({ mode, setMode, message, setMessage }) {
   const [form, setForm] = useState({ email: "", password: "", fullName: "", role: "consultant" });
+  const [loading, setLoading] = useState(false);
 
   async function submit(e) {
     e.preventDefault();
@@ -142,129 +111,109 @@ function Auth({ view, setView, message, setMessage }) {
     setMessage("");
 
     try {
-      if (isLogin) {
+      if (mode === "login") {
         const { error } = await supabase.auth.signInWithPassword({
-          email: form.email,
+          email: form.email.trim(),
           password: form.password,
         });
         if (error) throw error;
       } else {
         const { error } = await supabase.auth.signUp({
-          email: form.email,
+          email: form.email.trim(),
           password: form.password,
-          options: { data: { full_name: form.fullName, role: form.role } },
+          options: {
+            data: {
+              full_name: form.fullName.trim(),
+              role: form.role,
+            },
+          },
         });
         if (error) throw error;
-        setMessage("Compte créé. Vous pouvez maintenant vous connecter.");
-        setView("login");
+        setMessage("Compte créé. Si la confirmation email est activée, vérifie ta boîte mail.");
+        setMode("login");
       }
-    } catch (err) {
-      setMessage(err.message || "Erreur de connexion.");
+    } catch (error) {
+      setMessage(error.message || "Erreur d’authentification.");
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <main className="min-h-screen bg-slate-950 text-white">
-      <section className="mx-auto grid min-h-screen max-w-7xl items-center gap-10 px-4 py-10 md:grid-cols-2 md:px-6">
+    <div className="min-h-screen bg-slate-950 text-white">
+      <div className="mx-auto grid min-h-screen max-w-6xl items-center gap-10 px-6 py-10 lg:grid-cols-2">
         <div>
           <Logo light />
-          <p className="mb-4 mt-10 inline-flex rounded-full border border-blue-400/30 bg-blue-500/10 px-4 py-2 text-sm text-blue-100">
+          <div className="mt-10 inline-flex rounded-full border border-blue-700/50 bg-blue-950/50 px-4 py-2 text-sm">
             Espace connecté · consultants · clients · admin
-          </p>
-          <h1 className="text-4xl font-black leading-tight md:text-6xl">
-            Votre espace privé LRN PORTAGE.
-          </h1>
-          <p className="mt-6 max-w-xl text-lg leading-8 text-slate-300">
-            Connectez-vous pour suivre les missions, CRA, documents, frais, validations et informations administratives.
+          </div>
+          <h1 className="mt-8 text-5xl font-black leading-tight md:text-6xl">Votre espace privé LRN PORTAGE.</h1>
+          <p className="mt-6 max-w-xl text-lg text-slate-300">
+            Suivi des documents, CRA, validations, frais et factures.
           </p>
         </div>
 
-        <div className="rounded-[2rem] bg-white p-6 text-slate-950 shadow-2xl md:p-8">
-          <h2 className="text-2xl font-black">{isLogin ? "Connexion" : "Créer un compte"}</h2>
+        <form onSubmit={submit} className="rounded-[2rem] bg-white p-8 text-slate-950 shadow-xl">
+          <h2 className="text-3xl font-black">{mode === "login" ? "Connexion" : "Créer un compte"}</h2>
           <p className="mt-2 text-sm text-slate-600">
-            {isLogin ? "Accédez à votre espace sécurisé." : "Créez un accès consultant ou client."}
+            {mode === "login" ? "Accédez à votre espace sécurisé." : "Créez un accès consultant ou client."}
           </p>
 
-          <form className="mt-6 space-y-4" onSubmit={submit}>
-            {!isLogin && (
+          <div className="mt-6 space-y-4">
+            {mode === "signup" && (
               <>
                 <Input label="Nom complet / société" value={form.fullName} onChange={(v) => setForm({ ...form, fullName: v })} />
-                <label className="block">
-                  <span className="mb-2 block text-sm font-semibold text-slate-700">Type de compte</span>
-                  <select
-                    value={form.role}
-                    onChange={(e) => setForm({ ...form, role: e.target.value })}
-                    className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700"
-                  >
-                    <option value="consultant">Consultant</option>
-                    <option value="client">Entreprise / Client</option>
-                  </select>
-                </label>
+                <Select label="Type de compte" value={form.role} onChange={(v) => setForm({ ...form, role: v })}>
+                  <option value="consultant">Consultant</option>
+                  <option value="client">Client</option>
+                </Select>
               </>
             )}
 
-            <Input label="Email" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} />
+            <Input label="Email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} />
             <Input label="Mot de passe" type="password" value={form.password} onChange={(v) => setForm({ ...form, password: v })} />
 
-            {message && <div className="rounded-2xl bg-blue-50 p-4 text-sm leading-6 text-blue-900">{message}</div>}
+            {message && <Alert>{message}</Alert>}
 
-            <button disabled={loading} className="min-h-12 w-full rounded-full bg-blue-700 px-6 py-3 font-semibold text-white hover:bg-blue-800 disabled:opacity-60">
-              {loading ? "Chargement..." : isLogin ? "Se connecter" : "Créer le compte"}
+            <button disabled={loading} className="w-full rounded-full bg-blue-700 px-6 py-3 font-bold text-white hover:bg-blue-800 disabled:opacity-60">
+              {loading ? "Patiente..." : mode === "login" ? "Se connecter" : "Créer le compte"}
             </button>
-          </form>
 
-          <div className="mt-6 text-center text-sm text-slate-600">
-            {isLogin ? "Pas encore de compte ?" : "Déjà un compte ?"}{" "}
-            <button
-              onClick={() => {
-                setMessage("");
-                setView(isLogin ? "signup" : "login");
-              }}
-              className="font-bold text-blue-700"
-            >
-              {isLogin ? "Créer un accès" : "Se connecter"}
+            <button type="button" onClick={() => setMode(mode === "login" ? "signup" : "login")} className="w-full text-sm font-semibold text-blue-700">
+              {mode === "login" ? "Pas encore de compte ? Créer un accès" : "Déjà un compte ? Se connecter"}
             </button>
           </div>
-        </div>
-      </section>
-    </main>
+        </form>
+      </div>
+    </div>
   );
 }
 
-function Dashboard({ session, profile, message, signOut }) {
-  const role = profile?.role || "consultant";
-
-  if (role === "admin") {
-    return <AdminDashboard session={session} profile={profile} message={message} signOut={signOut} />;
-  }
-
-  return <UserDashboard session={session} profile={profile} message={message} signOut={signOut} />;
-}
-
-function AdminDashboard({ session, profile, message, signOut }) {
-  const [activeTab, setActiveTab] = useState("overview");
+function Dashboard({ session, profile, signOut }) {
+  const [tab, setTab] = useState("overview");
   const [profiles, setProfiles] = useState([]);
   const [documents, setDocuments] = useState([]);
   const [cras, setCras] = useState([]);
   const [invoices, setInvoices] = useState([]);
-  const [loadingProfiles, setLoadingProfiles] = useState(false);
-  const [loadingDocuments, setLoadingDocuments] = useState(false);
-  const [loadingCras, setLoadingCras] = useState(false);
-  const [loadingInvoices, setLoadingInvoices] = useState(false);
-  const [adminMessage, setAdminMessage] = useState("");
+  const [message, setMessage] = useState("");
+  const isAdmin = profile.role === "admin";
+  const isClient = profile.role === "client";
+  const isConsultant = profile.role === "consultant";
+
+  async function refreshAll() {
+    setMessage("");
+    await Promise.all([loadProfiles(), loadDocuments(), loadCras(), loadInvoices()]);
+  }
 
   useEffect(() => {
-    loadProfiles();
-    loadDocuments();
-    loadCras();
-    loadInvoices();
-  }, []);
+    refreshAll();
+  }, [profile.id, profile.role]);
 
   async function loadProfiles() {
-    setLoadingProfiles(true);
-    setAdminMessage("");
+    if (!isAdmin) {
+      setProfiles([profile]);
+      return;
+    }
 
     const { data, error } = await supabase
       .from("profiles")
@@ -272,57 +221,52 @@ function AdminDashboard({ session, profile, message, signOut }) {
       .order("created_at", { ascending: false });
 
     if (error) {
-      setAdminMessage("Impossible de charger les profils. Lance le script supabase-admin-policies.sql.");
-      setLoadingProfiles(false);
+      setMessage("Impossible de charger les profils.");
       return;
     }
-
     setProfiles(data || []);
-    setLoadingProfiles(false);
   }
 
   async function loadDocuments() {
-    setLoadingDocuments(true);
-    setAdminMessage("");
-
-    const { data, error } = await supabase
+    let query = supabase
       .from("documents")
       .select("id,owner_id,title,file_path,document_type,created_at,profiles:owner_id(email,full_name,role)")
       .order("created_at", { ascending: false });
 
+    if (!isAdmin) query = query.eq("owner_id", profile.id);
+
+    const { data, error } = await query;
     if (error) {
-      setAdminMessage("Impossible de charger les documents. Lance le script supabase-documents.sql.");
-      setLoadingDocuments(false);
+      setMessage("Impossible de charger les documents. Relance supabase-documents.sql.");
+      setDocuments([]);
       return;
     }
-
     setDocuments(data || []);
-    setLoadingDocuments(false);
   }
 
-
   async function loadCras() {
-    setLoadingCras(true);
-    setAdminMessage("");
-
-    const { data, error } = await supabase
+    let query = supabase
       .from("cra")
-      .select("id,consultant_id,client_id,month,worked_days,consultant_comment,client_comment,client_comment_visibility,status,created_at,updated_at,submitted_at,validated_at,consultant:consultant_id(email,full_name,role),client:client_id(email,full_name,role)")
+      .select("id,consultant_id,client_id,month,worked_days,extra_hours,extra_hours_rate,saturday_days,saturday_rate,consultant_comment,client_comment,client_comment_visibility,status,created_at,submitted_at,validated_at,consultant:consultant_id(email,full_name,role),client:client_id(email,full_name,role)")
       .order("created_at", { ascending: false });
 
+    if (isClient) query = query.eq("client_id", profile.id);
+    if (isConsultant) query = query.eq("consultant_id", profile.id);
+
+    const { data, error } = await query;
     if (error) {
-      setAdminMessage("Impossible de charger les CRA. Lance le script supabase-cra.sql.");
-      setLoadingCras(false);
+      setMessage("Impossible de charger les CRA. Relance supabase-cra.sql.");
+      setCras([]);
       return;
     }
-
     setCras(data || []);
-    setLoadingCras(false);
   }
 
   async function loadInvoices() {
-    setLoadingInvoices(true);
-    setAdminMessage("");
+    if (!isAdmin) {
+      setInvoices([]);
+      return;
+    }
 
     const { data, error } = await supabase
       .from("invoices")
@@ -330,1554 +274,796 @@ function AdminDashboard({ session, profile, message, signOut }) {
       .order("created_at", { ascending: false });
 
     if (error) {
-      setAdminMessage("Impossible de charger les factures. Lance le script supabase-invoices.sql.");
-      setLoadingInvoices(false);
+      setMessage("Impossible de charger les factures. Relance supabase-invoices.sql.");
+      setInvoices([]);
       return;
     }
-
     setInvoices(data || []);
-    setLoadingInvoices(false);
   }
 
-  async function updateRole(id, newRole) {
-    const { error } = await supabase
-      .from("profiles")
-      .update({ role: newRole })
-      .eq("id", id);
-
-    if (error) {
-      setAdminMessage("Modification impossible. Vérifie les droits admin RLS.");
-      return;
-    }
-
-    await loadProfiles();
-  }
-
-  const stats = useMemo(() => {
-    return {
-      consultants: profiles.filter((p) => p.role === "consultant").length,
-      clients: profiles.filter((p) => p.role === "client").length,
-      admins: profiles.filter((p) => p.role === "admin").length,
-      total: profiles.length,
-      documents: documents.length,
-      craPending: cras.filter((cra) => cra.status === "submitted").length,
-      craTotal: cras.length,
-      invoices: invoices.length,
-    };
-  }, [profiles, documents, cras, invoices]);
+  const stats = {
+    users: profiles.length,
+    consultants: profiles.filter((p) => p.role === "consultant").length,
+    clients: profiles.filter((p) => p.role === "client").length,
+    admins: profiles.filter((p) => p.role === "admin").length,
+    documents: documents.length,
+    craPending: cras.filter((c) => c.status === "submitted").length,
+    invoices: invoices.length,
+  };
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <Header signOut={signOut} />
+      <header className="sticky top-0 z-10 border-b border-slate-100 bg-white/95 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 md:px-6">
+          <Logo />
+          <button onClick={signOut} className="rounded-full bg-slate-950 px-5 py-3 text-sm font-bold text-white">Déconnexion</button>
+        </div>
+      </header>
 
-      <main className="mx-auto max-w-7xl px-4 py-10 md:px-6">
+      <main className="mx-auto max-w-7xl px-4 py-8 md:px-6">
         {message && <Alert>{message}</Alert>}
-        {adminMessage && <Alert>{adminMessage}</Alert>}
 
-        <Hero role="Administrateur" title={`Bonjour, ${profile?.full_name || session.user.email}`} />
+        <Hero role={roles[profile.role] || profile.role} title={`Bonjour, ${profile.full_name || session.user.email}`} />
 
-        <div className="mt-8 grid gap-5 md:grid-cols-7">
-          <StatCard title="Utilisateurs" value={stats.total} text="Tous les comptes créés" />
-          <StatCard title="Consultants" value={stats.consultants} text="Profils consultants" />
-          <StatCard title="Clients" value={stats.clients} text="Comptes entreprises" />
-          <StatCard title="Admins" value={stats.admins} text="Administrateurs" />
-          <StatCard title="Documents" value={stats.documents} text="Documents déposés" />
-          <StatCard title="CRA à valider" value={stats.craPending} text="Soumis par consultants" />
-          <StatCard title="Factures" value={stats.invoices} text="Générées depuis CRA" />
+        <div className="mt-8 grid gap-4 md:grid-cols-4 lg:grid-cols-7">
+          {isAdmin && <Stat title="Utilisateurs" value={stats.users} text="Tous les comptes" />}
+          {isAdmin && <Stat title="Consultants" value={stats.consultants} text="Profils consultants" />}
+          {isAdmin && <Stat title="Clients" value={stats.clients} text="Comptes entreprises" />}
+          {isAdmin && <Stat title="Admins" value={stats.admins} text="Administrateurs" />}
+          <Stat title="Documents" value={stats.documents} text="Documents déposés" />
+          <Stat title="CRA à valider" value={stats.craPending} text="CRA soumis" />
+          {isAdmin && <Stat title="Factures" value={stats.invoices} text="Depuis CRA" />}
         </div>
 
         <div className="mt-8 flex flex-wrap gap-3">
-          <TabButton active={activeTab === "overview"} onClick={() => setActiveTab("overview")}>Vue générale</TabButton>
-          <TabButton active={activeTab === "profiles"} onClick={() => setActiveTab("profiles")}>Gestion des profils</TabButton>
-          <TabButton active={activeTab === "documents"} onClick={() => setActiveTab("documents")}>Documents</TabButton>
-          <TabButton active={activeTab === "cra"} onClick={() => setActiveTab("cra")}>CRA</TabButton>
-          <TabButton active={activeTab === "invoices"} onClick={() => setActiveTab("invoices")}>Factures</TabButton>
+          <Pill active={tab === "overview"} onClick={() => setTab("overview")}>Vue générale</Pill>
+          {isAdmin && <Pill active={tab === "profiles"} onClick={() => setTab("profiles")}>Gestion des profils</Pill>}
+          <Pill active={tab === "documents"} onClick={() => setTab("documents")}>{isAdmin ? "Documents" : "Mes documents"}</Pill>
+          <Pill active={tab === "cra"} onClick={() => setTab("cra")}>CRA</Pill>
+          {isAdmin && <Pill active={tab === "invoices"} onClick={() => setTab("invoices")}>Factures</Pill>}
         </div>
 
-        {activeTab === "overview" && (
+        {tab === "overview" && (
           <section className="mt-6 grid gap-6 md:grid-cols-2">
             <Panel title="Actions rapides">
-              <ActionButton label="Gérer les profils" onClick={() => setActiveTab("profiles")} />
-              <ActionButton label="Déposer / gérer les documents" onClick={() => setActiveTab("documents")} />
-              <ActionButton label="Gérer les CRA" onClick={() => setActiveTab("cra")} />
-              <ActionButton label="Générer une facture" onClick={() => setActiveTab("invoices")} />
-              <ActionButton label="Rafraîchir les données" onClick={() => { loadProfiles(); loadDocuments(); loadCras(); loadInvoices(); }} />
+              {isAdmin && <Action label="Gérer les profils" onClick={() => setTab("profiles")} />}
+              <Action label="Gérer les documents" onClick={() => setTab("documents")} />
+              <Action label="Gérer les CRA" onClick={() => setTab("cra")} />
+              {isAdmin && <Action label="Générer une facture" onClick={() => setTab("invoices")} />}
+              <Action label="Rafraîchir les données" onClick={refreshAll} />
             </Panel>
 
-            <Panel title="Informations admin">
-              <InfoLine label="Email" value={session.user.email} />
-              <InfoLine label="Rôle" value="Administrateur" />
-              <InfoLine label="ID utilisateur" value={session.user.id} />
+            <Panel title={isAdmin ? "Informations admin" : "Informations du compte"}>
+              <Info label="Email" value={session.user.email} />
+              <Info label="Rôle" value={roles[profile.role] || profile.role} />
+              <Info label="ID utilisateur" value={session.user.id} />
             </Panel>
           </section>
         )}
 
-        {activeTab === "profiles" && (
-          <ProfilesManager
-            profiles={profiles}
-            loading={loadingProfiles}
-            onRefresh={loadProfiles}
-            onUpdateRole={updateRole}
-          />
+        {tab === "profiles" && isAdmin && (
+          <Profiles profiles={profiles} onRefresh={loadProfiles} />
         )}
 
-        {activeTab === "documents" && (
-          <DocumentsManager
-            currentProfile={profile}
-            isAdmin
+        {tab === "documents" && (
+          <Documents
+            profile={profile}
+            isAdmin={isAdmin}
             profiles={profiles}
             documents={documents}
-            loading={loadingDocuments}
             onRefresh={loadDocuments}
           />
         )}
 
-        {activeTab === "cra" && (
-          <CraManager
-            currentProfile={profile}
+        {tab === "cra" && (
+          <Cra
+            profile={profile}
+            isAdmin={isAdmin}
+            isClient={isClient}
             profiles={profiles}
             cras={cras}
-            loading={loadingCras}
             onRefresh={loadCras}
-            mode="admin"
           />
+        )}
+
+        {tab === "invoices" && isAdmin && (
+          <Invoices profile={profile} cras={cras} invoices={invoices} onRefresh={loadInvoices} />
         )}
       </main>
     </div>
   );
 }
 
-function ProfilesManager({ profiles, loading, onRefresh, onUpdateRole }) {
-  const [filter, setFilter] = useState("all");
+function Profiles({ profiles, onRefresh }) {
+  const [msg, setMsg] = useState("");
 
-  const filteredProfiles = profiles.filter((profile) => {
-    if (filter === "all") return true;
-    return profile.role === filter;
-  });
-
-  return (
-    <section className="mt-6 rounded-[2rem] bg-white p-6 shadow-sm">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h2 className="text-2xl font-black text-slate-950">Gestion des profils</h2>
-          <p className="mt-2 text-sm text-slate-600">
-            Consulte les comptes créés et ajuste les rôles si nécessaire.
-          </p>
-        </div>
-
-        <button
-          onClick={onRefresh}
-          className="rounded-full bg-blue-700 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-800"
-        >
-          Rafraîchir
-        </button>
-      </div>
-
-      <div className="mt-6 flex flex-wrap gap-3">
-        <TabButton active={filter === "all"} onClick={() => setFilter("all")}>Tous</TabButton>
-        <TabButton active={filter === "consultant"} onClick={() => setFilter("consultant")}>Consultants</TabButton>
-        <TabButton active={filter === "client"} onClick={() => setFilter("client")}>Clients</TabButton>
-        <TabButton active={filter === "admin"} onClick={() => setFilter("admin")}>Admins</TabButton>
-      </div>
-
-      <div className="mt-6 overflow-hidden rounded-3xl border border-slate-100">
-        <div className="hidden grid-cols-4 bg-slate-50 px-5 py-4 text-xs font-bold uppercase tracking-wide text-slate-500 md:grid">
-          <span>Nom</span>
-          <span>Email</span>
-          <span>Rôle</span>
-          <span>ID</span>
-        </div>
-
-        {loading ? (
-          <div className="p-6 text-slate-600">Chargement des profils...</div>
-        ) : filteredProfiles.length === 0 ? (
-          <div className="p-6 text-slate-600">Aucun profil trouvé.</div>
-        ) : (
-          filteredProfiles.map((profile) => (
-            <div key={profile.id} className="grid gap-3 border-t border-slate-100 px-5 py-4 md:grid-cols-4 md:items-center">
-              <div>
-                <p className="font-bold text-slate-950">{profile.full_name || "Sans nom"}</p>
-                <p className="text-xs text-slate-500 md:hidden">{profile.email}</p>
-              </div>
-              <p className="break-all text-sm text-slate-700">{profile.email}</p>
-              <select
-                value={profile.role}
-                onChange={(e) => onUpdateRole(profile.id, e.target.value)}
-                className="w-fit rounded-full border border-blue-100 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700 outline-none"
-              >
-                <option value="consultant">Consultant</option>
-                <option value="client">Client</option>
-                <option value="admin">Admin</option>
-              </select>
-              <p className="break-all text-xs text-slate-500">{profile.id}</p>
-            </div>
-          ))
-        )}
-      </div>
-    </section>
-  );
-}
-
-function DocumentsManager({ currentProfile, isAdmin = false, readOnly = false, profiles = [], documents, loading, onRefresh }) {
-  const [form, setForm] = useState({
-    ownerId: currentProfile?.id || "",
-    title: "",
-    documentType: "contrat",
-    file: null,
-  });
-  const [uploading, setUploading] = useState(false);
-  const [deletingId, setDeletingId] = useState(null);
-  const [docMessage, setDocMessage] = useState("");
-  const [filter, setFilter] = useState("all");
-
-  useEffect(() => {
-    if (!form.ownerId && currentProfile?.id) {
-      setForm((prev) => ({ ...prev, ownerId: currentProfile.id }));
-    }
-  }, [currentProfile]);
-
-  async function uploadDocument(e) {
-    e.preventDefault();
-    setUploading(true);
-    setDocMessage("");
-
-    try {
-      const ownerId = isAdmin ? form.ownerId : currentProfile.id;
-      if (!ownerId) throw new Error("Aucun propriétaire sélectionné.");
-      if (!form.file) throw new Error("Sélectionne un fichier.");
-      if (!form.title.trim()) throw new Error("Ajoute un titre.");
-
-      const safeFileName = form.file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_");
-      const filePath = `${ownerId}/${Date.now()}-${safeFileName}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from(DOCUMENT_BUCKET)
-        .upload(filePath, form.file, { upsert: false });
-
-      if (uploadError) throw uploadError;
-
-      const { error: insertError } = await supabase
-        .from("documents")
-        .insert({
-          owner_id: ownerId,
-          title: form.title.trim(),
-          document_type: form.documentType,
-          file_path: filePath,
-        });
-
-      if (insertError) throw insertError;
-
-      setDocMessage("Document déposé avec succès.");
-      setForm({ ownerId, title: "", documentType: "contrat", file: null });
-      const fileInput = document.getElementById("document-file-input");
-      if (fileInput) fileInput.value = "";
-      await onRefresh();
-    } catch (error) {
-      setDocMessage(error.message || "Erreur pendant le dépôt du document.");
-    } finally {
-      setUploading(false);
-    }
-  }
-
-  async function deleteDocument(doc) {
-    const confirmed = window.confirm(`Supprimer le document \"${doc.title}\" ?`);
-    if (!confirmed) return;
-
-    setDeletingId(doc.id);
-    setDocMessage("");
-
-    try {
-      const { error: storageError } = await supabase.storage
-        .from(DOCUMENT_BUCKET)
-        .remove([doc.file_path]);
-
-      if (storageError) throw storageError;
-
-      const { error: deleteError } = await supabase
-        .from("documents")
-        .delete()
-        .eq("id", doc.id);
-
-      if (deleteError) throw deleteError;
-
-      setDocMessage("Document supprimé avec succès.");
-      await onRefresh();
-    } catch (error) {
-      setDocMessage(error.message || "Impossible de supprimer le document.");
-    } finally {
-      setDeletingId(null);
-    }
-  }
-
-  const visibleDocuments = documents.filter((doc) => {
-    if (filter === "all") return true;
-    return doc.document_type === filter;
-  });
-
-  return (
-    <section className={readOnly ? "mt-6" : "mt-6 grid gap-6 lg:grid-cols-[420px_1fr]"}>
-      {!readOnly && (
-      <div className="rounded-[2rem] bg-white p-6 shadow-sm">
-        <h2 className="text-2xl font-black text-slate-950">Déposer un document</h2>
-        <p className="mt-2 text-sm text-slate-600">
-          Ajoute un contrat, une fiche de paie, un CRA ou un justificatif.
-        </p>
-
-        <form className="mt-6 space-y-4" onSubmit={uploadDocument}>
-          {isAdmin && (
-            <label className="block">
-              <span className="mb-2 block text-sm font-semibold text-slate-700">Propriétaire</span>
-              <select
-                value={form.ownerId}
-                onChange={(e) => setForm({ ...form, ownerId: e.target.value })}
-                className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700"
-              >
-                <option value="">Sélectionner un utilisateur</option>
-                {profiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {(profile.full_name || profile.email)} — {roleLabels[profile.role] || profile.role}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-
-          <Input label="Titre du document" value={form.title} onChange={(v) => setForm({ ...form, title: v })} />
-
-          <label className="block">
-            <span className="mb-2 block text-sm font-semibold text-slate-700">Type de document</span>
-            <select
-              value={form.documentType}
-              onChange={(e) => setForm({ ...form, documentType: e.target.value })}
-              className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700"
-            >
-              <option value="contrat">Contrat</option>
-              <option value="fiche_paie">Fiche de paie</option>
-              <option value="justificatif">Justificatif</option>
-              <option value="cra">CRA</option>
-              <option value="autre">Autre</option>
-            </select>
-          </label>
-
-          <label className="block">
-            <span className="mb-2 block text-sm font-semibold text-slate-700">Fichier</span>
-            <input
-              id="document-file-input"
-              type="file"
-              accept=".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx,.xls,.xlsx"
-              onChange={(e) => setForm({ ...form, file: e.target.files?.[0] || null })}
-              className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-blue-700"
-            />
-          </label>
-
-          {docMessage && <Alert>{docMessage}</Alert>}
-
-          <button
-            disabled={uploading}
-            className="min-h-12 w-full rounded-full bg-blue-700 px-6 py-3 font-semibold text-white hover:bg-blue-800 disabled:opacity-60"
-          >
-            {uploading ? "Dépôt en cours..." : "Déposer le document"}
-          </button>
-        </form>
-      </div>
-      )}
-
-      <div className="rounded-[2rem] bg-white p-6 shadow-sm">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h2 className="text-2xl font-black text-slate-950">Documents</h2>
-            <p className="mt-2 text-sm text-slate-600">
-              {readOnly ? "Consulte et ouvre tes documents." : "Consulte, ouvre et supprime les documents déposés."}
-            </p>
-          </div>
-
-          <button
-            onClick={onRefresh}
-            className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800"
-          >
-            Rafraîchir
-          </button>
-        </div>
-
-        <div className="mt-6 flex flex-wrap gap-3">
-          <TabButton active={filter === "all"} onClick={() => setFilter("all")}>Tous</TabButton>
-          <TabButton active={filter === "contrat"} onClick={() => setFilter("contrat")}>Contrats</TabButton>
-          <TabButton active={filter === "fiche_paie"} onClick={() => setFilter("fiche_paie")}>Fiches de paie</TabButton>
-          <TabButton active={filter === "justificatif"} onClick={() => setFilter("justificatif")}>Justificatifs</TabButton>
-          <TabButton active={filter === "cra"} onClick={() => setFilter("cra")}>CRA</TabButton>
-        </div>
-
-        {craMessage && (
-          <div className="mt-4">
-            <Alert>{craMessage}</Alert>
-          </div>
-        )}
-
-        <div className="mt-6 overflow-hidden rounded-3xl border border-slate-100">
-          <div className="hidden grid-cols-5 bg-slate-50 px-5 py-4 text-xs font-bold uppercase tracking-wide text-slate-500 md:grid">
-            <span>Titre</span>
-            <span>Type</span>
-            <span>Propriétaire</span>
-            <span>Date</span>
-            <span>Action</span>
-          </div>
-
-          {loading ? (
-            <div className="p-6 text-slate-600">Chargement des documents...</div>
-          ) : visibleDocuments.length === 0 ? (
-            <div className="p-6 text-slate-600">Aucun document trouvé.</div>
-          ) : (
-            visibleDocuments.map((doc) => (
-              <DocumentRow
-                key={doc.id}
-                doc={doc}
-                canDelete={isAdmin}
-                deleting={deletingId === doc.id}
-                onDelete={deleteDocument}
-              />
-            ))
-          )}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function DocumentRow({ doc, canDelete = false, deleting = false, onDelete }) {
-  const [opening, setOpening] = useState(false);
-  const ownerName = doc.profiles?.full_name || doc.profiles?.email || "Utilisateur";
-
-  async function openDocument() {
-    setOpening(true);
-
-    const { data, error } = await supabase.storage
-      .from(DOCUMENT_BUCKET)
-      .createSignedUrl(doc.file_path, 60);
-
-    setOpening(false);
-
+  async function changeRole(id, role) {
+    setMsg("");
+    const { error } = await supabase.from("profiles").update({ role }).eq("id", id);
     if (error) {
-      alert("Impossible d’ouvrir le document. Vérifie les droits Storage.");
+      setMsg(error.message);
       return;
     }
+    await onRefresh();
+  }
 
+  return (
+    <Panel title="Gestion des profils" subtitle="Consulte les comptes créés et ajuste les rôles.">
+      {msg && <Alert>{msg}</Alert>}
+      <div className="mt-6 overflow-hidden rounded-3xl border border-slate-100">
+        <HeaderRow cols="md:grid-cols-4" values={["Nom", "Email", "Rôle", "ID"]} />
+        {profiles.map((p) => (
+          <div key={p.id} className="grid gap-3 border-t border-slate-100 px-5 py-4 md:grid-cols-4 md:items-center">
+            <b>{p.full_name || "Sans nom"}</b>
+            <span className="break-all text-sm">{p.email}</span>
+            <select value={p.role} onChange={(e) => changeRole(p.id, e.target.value)} className="w-fit rounded-full border bg-blue-50 px-3 py-2 text-sm font-bold text-blue-700">
+              <option value="consultant">Consultant</option>
+              <option value="client">Client</option>
+              <option value="admin">Admin</option>
+            </select>
+            <span className="break-all text-xs text-slate-500">{p.id}</span>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function Documents({ profile, isAdmin, profiles, documents, onRefresh }) {
+  const [form, setForm] = useState({ ownerId: profile.id, title: "", type: "contrat", file: null });
+  const [msg, setMsg] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [busy, setBusy] = useState(false);
+
+  const visible = documents.filter((d) => filter === "all" || d.document_type === filter);
+
+  async function upload(e) {
+    e.preventDefault();
+    setBusy(true);
+    setMsg("");
+
+    try {
+      const ownerId = isAdmin ? form.ownerId : profile.id;
+      if (!ownerId) throw new Error("Sélectionne un propriétaire.");
+      if (!form.title.trim()) throw new Error("Ajoute un titre.");
+      if (!form.file) throw new Error("Choisis un fichier.");
+
+      const fileName = form.file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+      const path = `${ownerId}/${Date.now()}-${fileName}`;
+
+      const uploadResult = await supabase.storage.from(BUCKET).upload(path, form.file, { upsert: false });
+      if (uploadResult.error) throw uploadResult.error;
+
+      const insertResult = await supabase.from("documents").insert({
+        owner_id: ownerId,
+        title: form.title.trim(),
+        document_type: form.type,
+        file_path: path,
+      });
+      if (insertResult.error) throw insertResult.error;
+
+      setMsg("Document déposé avec succès.");
+      setForm({ ownerId, title: "", type: "contrat", file: null });
+      const input = document.getElementById("doc-file");
+      if (input) input.value = "";
+      await onRefresh();
+    } catch (error) {
+      setMsg(error.message || "Erreur pendant le dépôt.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openDoc(doc) {
+    const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(doc.file_path, 120);
+    if (error) {
+      alert(error.message || "Impossible d’ouvrir le document.");
+      return;
+    }
     window.open(data.signedUrl, "_blank", "noopener,noreferrer");
   }
 
-  return (
-    <div className="grid gap-3 border-t border-slate-100 px-5 py-4 md:grid-cols-5 md:items-center">
-      <div>
-        <p className="font-bold text-slate-950">{doc.title}</p>
-        <p className="text-xs text-slate-500 md:hidden">{docTypeLabels[doc.document_type] || doc.document_type}</p>
-      </div>
-      <p className="text-sm text-slate-700">{docTypeLabels[doc.document_type] || doc.document_type}</p>
-      <p className="text-sm text-slate-700">{ownerName}</p>
-      <p className="text-xs text-slate-500">{formatDate(doc.created_at)}</p>
-      <div className="flex flex-wrap gap-2">
-        <button
-          onClick={openDocument}
-          disabled={opening || deleting}
-          className="w-fit rounded-full bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-60"
-        >
-          {opening ? "Ouverture..." : "Ouvrir"}
-        </button>
-
-        {canDelete && (
-          <button
-            onClick={() => onDelete?.(doc)}
-            disabled={deleting || opening}
-            className="w-fit rounded-full bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-100 disabled:opacity-60"
-          >
-            {deleting ? "Suppression..." : "Supprimer"}
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function UserDashboard({ session, profile, message, signOut }) {
-  const role = profile?.role || "consultant";
-  const [activeTab, setActiveTab] = useState("overview");
-  const [documents, setDocuments] = useState([]);
-  const [cras, setCras] = useState([]);
-  const [loadingDocuments, setLoadingDocuments] = useState(false);
-  const [loadingCras, setLoadingCras] = useState(false);
-  const [userMessage, setUserMessage] = useState("");
-
-  useEffect(() => {
-    loadDocuments();
-    loadCras();
-  }, [profile]);
-
-  async function loadDocuments() {
-    if (!profile?.id) return;
-    setLoadingDocuments(true);
-    setUserMessage("");
-
-    const { data, error } = await supabase
-      .from("documents")
-      .select("id,owner_id,title,file_path,document_type,created_at")
-      .eq("owner_id", profile.id)
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      setUserMessage("Impossible de charger les documents. Vérifie le script supabase-documents.sql.");
-      setLoadingDocuments(false);
-      return;
-    }
-
-    setDocuments(data || []);
-    setLoadingDocuments(false);
-  }
-
-
-  async function loadCras() {
-    if (!profile?.id) return;
-    setLoadingCras(true);
-    setUserMessage("");
-
-    let query = supabase
-      .from("cra")
-      .select("id,consultant_id,client_id,month,worked_days,consultant_comment,client_comment,client_comment_visibility,status,created_at,updated_at,submitted_at,validated_at,consultant:consultant_id(email,full_name,role),client:client_id(email,full_name,role)")
-      .order("created_at", { ascending: false });
-
-    if (role === "client") {
-      query = query.eq("client_id", profile.id);
-    } else {
-      query = query.eq("consultant_id", profile.id);
-    }
-
-    const { data, error } = await query;
-
-    if (error) {
-      setUserMessage("Impossible de charger les CRA. Vérifie le script supabase-cra.sql.");
-      setLoadingCras(false);
-      return;
-    }
-
-    setCras(data || []);
-    setLoadingCras(false);
-  }
-
-  const cards = role === "client"
-    ? [
-        ["Consultants", "0", "Voir les profils affectés"],
-        ["CRA en attente", cras.filter((cra) => cra.status === "submitted").length, "Valider l’activité mensuelle"],
-        ["Documents", documents.length, "Contrats et factures"],
-        ["Demandes", "0", "Demander un renfort opérationnel"],
-      ]
-    : [
-        ["Mission active", "À définir", "Consulter les informations de mission"],
-        ["CRA du mois", cras.find((cra) => cra.status === "submitted") ? "Soumis" : "À remplir", "Déclarer les jours travaillés"],
-        ["Documents", documents.length, "Contrats, fiches de paie et justificatifs"],
-        ["Frais", "À saisir", "IK, paniers repas et téléphone"],
-      ];
-
-  return (
-    <div className="min-h-screen bg-slate-50">
-      <Header signOut={signOut} />
-
-      <main className="mx-auto max-w-7xl px-4 py-10 md:px-6">
-        {message && <Alert>{message}</Alert>}
-        {userMessage && <Alert>{userMessage}</Alert>}
-
-        <Hero role={roleLabels[role] || "Utilisateur"} title={`Bonjour, ${profile?.full_name || session.user.email}`} />
-
-        <section className="mt-8 grid gap-5 md:grid-cols-4">
-          {cards.map(([title, value, text]) => (
-            <StatCard key={title} title={title} value={value} text={text} />
-          ))}
-        </section>
-
-        <div className="mt-8 flex flex-wrap gap-3">
-          <TabButton active={activeTab === "overview"} onClick={() => setActiveTab("overview")}>Vue générale</TabButton>
-          <TabButton active={activeTab === "documents"} onClick={() => setActiveTab("documents")}>Mes documents</TabButton>
-          <TabButton active={activeTab === "cra"} onClick={() => setActiveTab("cra")}>CRA</TabButton>
-          <TabButton active={activeTab === "invoices"} onClick={() => setActiveTab("invoices")}>Factures</TabButton>
-          <TabButton active={activeTab === "frais"} onClick={() => setActiveTab("frais")}>Frais</TabButton>
-        </div>
-
-        {activeTab === "overview" && (
-          <section className="mt-8 grid gap-6 md:grid-cols-2">
-            <Panel title="Actions rapides">
-              <ActionButton label="Voir mes documents" onClick={() => setActiveTab("documents")} />
-              <ActionButton label="Remplir un CRA" onClick={() => setActiveTab("cra")} />
-              <ActionButton label="Déclarer des frais" onClick={() => setActiveTab("frais")} />
-              <ActionButton label="Contacter LRN PORTAGE" />
-            </Panel>
-
-            <Panel title="Informations du compte">
-              <InfoLine label="Email" value={session.user.email} />
-              <InfoLine label="Rôle" value={roleLabels[role] || role} />
-              <InfoLine label="ID utilisateur" value={session.user.id} />
-            </Panel>
-          </section>
-        )}
-
-        {activeTab === "documents" && (
-          <DocumentsManager
-            currentProfile={profile}
-            readOnly
-            documents={documents}
-            loading={loadingDocuments}
-            onRefresh={loadDocuments}
-          />
-        )}
-
-        {activeTab === "cra" && (
-          <CraManager
-            currentProfile={profile}
-            cras={cras}
-            loading={loadingCras}
-            onRefresh={loadCras}
-            mode={role === "client" ? "client" : "consultant"}
-          />
-        )}
-
-        {activeTab === "frais" && (
-          <ComingSoon title="Module frais" text="Prochaine étape : déclaration IK, paniers repas, téléphone et justificatifs." />
-        )}
-      </main>
-    </div>
-  );
-}
-
-
-function CraManager({ currentProfile, profiles = [], cras, loading, onRefresh, mode }) {
-  const isAdmin = mode === "admin";
-  const isClient = mode === "client";
-  const isConsultant = mode === "consultant";
-
-  const consultants = profiles.filter((profile) => profile.role === "consultant");
-  const clients = profiles.filter((profile) => profile.role === "client");
-
-  const [form, setForm] = useState({
-    consultantId: currentProfile?.id || "",
-    clientId: "",
-    month: new Date().toISOString().slice(0, 7),
-    workedDays: 20,
-    consultantComment: "",
-  });
-  const [actionForm, setActionForm] = useState({ comment: "", visibility: "both" });
-  const [saving, setSaving] = useState(false);
-  const [craMessage, setCraMessage] = useState("");
-  const [filter, setFilter] = useState("all");
-  const [activeActionId, setActiveActionId] = useState(null);
-
-  useEffect(() => {
-    if (isConsultant && currentProfile?.id) {
-      setForm((prev) => ({ ...prev, consultantId: currentProfile.id }));
-    }
-  }, [currentProfile, isConsultant]);
-
-  async function submitCra(e) {
-    e.preventDefault();
-    setSaving(true);
-    setCraMessage("");
+  async function deleteDoc(doc) {
+    if (!window.confirm(`Supprimer "${doc.title}" ?`)) return;
+    setBusy(true);
+    setMsg("");
 
     try {
-      const consultantId = isAdmin ? form.consultantId : currentProfile.id;
-
-      if (!consultantId) throw new Error("Aucun consultant sélectionné.");
-      if (!form.month) throw new Error("Sélectionne le mois du CRA.");
-      if (form.workedDays === "" || Number.isNaN(Number(form.workedDays))) throw new Error("Indique le nombre de jours travaillés.");
-
-      const payload = {
-        consultant_id: consultantId,
-        client_id: form.clientId || null,
-        month: `${form.month}-01`,
-        worked_days: Number(form.workedDays),
-        consultant_comment: form.consultantComment?.trim() || null,
-        status: "submitted",
-        submitted_at: new Date().toISOString(),
-      };
-
-      const { error } = await supabase.from("cra").insert(payload);
+      await supabase.storage.from(BUCKET).remove([doc.file_path]);
+      const { error } = await supabase.from("documents").delete().eq("id", doc.id);
       if (error) throw error;
-
-      setCraMessage("CRA soumis avec succès.");
-      setForm((prev) => ({ ...prev, workedDays: 20, consultantComment: "" }));
+      setMsg("Document supprimé.");
       await onRefresh();
     } catch (error) {
-      setCraMessage(error.message || "Impossible de soumettre le CRA.");
+      setMsg(error.message || "Suppression impossible.");
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   }
-
-  async function decideCra(cra, status) {
-    setSaving(true);
-    setCraMessage("");
-
-    try {
-      const payload = {
-        status,
-        validated_by: currentProfile.id,
-        validated_at: new Date().toISOString(),
-        client_comment: actionForm.comment?.trim() || null,
-        client_comment_visibility: actionForm.visibility || "both",
-      };
-
-      const { error } = await supabase.from("cra").update(payload).eq("id", cra.id);
-      if (error) throw error;
-
-      setCraMessage(status === "approved" ? "CRA validé." : "CRA refusé.");
-      setActionForm({ comment: "", visibility: "both" });
-      setActiveActionId(null);
-      await onRefresh();
-    } catch (error) {
-      setCraMessage(error.message || "Action impossible sur le CRA.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function deleteCra(cra) {
-    const confirmed = window.confirm(`Supprimer le CRA de ${formatMonth(cra.month)} ?`);
-    if (!confirmed) return;
-
-    setSaving(true);
-    setCraMessage("");
-
-    try {
-      const { error } = await supabase
-        .from("cra")
-        .delete()
-        .eq("id", cra.id);
-
-      if (error) throw error;
-
-      setCraMessage("CRA supprimé avec succès.");
-      setActiveActionId(null);
-      await onRefresh();
-    } catch (error) {
-      setCraMessage(error.message || "Impossible de supprimer le CRA.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const visibleCras = cras.filter((cra) => filter === "all" ? true : cra.status === filter);
 
   return (
-    <section className={isConsultant ? "mt-6 grid gap-6 lg:grid-cols-[420px_1fr]" : "mt-6"}>
-      {isConsultant && (
-        <div className="rounded-[2rem] bg-white p-6 shadow-sm">
-          <h2 className="text-2xl font-black text-slate-950">Soumettre un CRA</h2>
-          <p className="mt-2 text-sm text-slate-600">Déclare les jours travaillés du mois.</p>
-
-          <form className="mt-6 space-y-4" onSubmit={submitCra}>
-            <label className="block">
-              <span className="mb-2 block text-sm font-semibold text-slate-700">Mois</span>
-              <input type="month" value={form.month} onChange={(e) => setForm({ ...form, month: e.target.value })} className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700" />
-            </label>
-
-            <Input label="Jours travaillés" type="number" value={form.workedDays} onChange={(v) => setForm({ ...form, workedDays: v })} />
-
-            <label className="block">
-              <span className="mb-2 block text-sm font-semibold text-slate-700">Commentaire consultant facultatif</span>
-              <textarea value={form.consultantComment} onChange={(e) => setForm({ ...form, consultantComment: e.target.value })} className="min-h-28 w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700" placeholder="Ex : activité du mois, absence, précision..." />
-            </label>
-
-            {craMessage && <Alert>{craMessage}</Alert>}
-
-            <button disabled={saving} className="min-h-12 w-full rounded-full bg-blue-700 px-6 py-3 font-semibold text-white hover:bg-blue-800 disabled:opacity-60">
-              {saving ? "Envoi..." : "Soumettre le CRA"}
-            </button>
-          </form>
-        </div>
-      )}
-
-      {isAdmin && (
-        <div className="mb-6 rounded-[2rem] bg-white p-6 shadow-sm">
-          <h2 className="text-2xl font-black text-slate-950">Créer un CRA pour un consultant</h2>
-          <p className="mt-2 text-sm text-slate-600">Option admin : crée un CRA directement pour un consultant si besoin.</p>
-
-          <form className="mt-6 grid gap-4 md:grid-cols-5" onSubmit={submitCra}>
-            <label className="block">
-              <span className="mb-2 block text-sm font-semibold text-slate-700">Consultant</span>
-              <select value={form.consultantId} onChange={(e) => setForm({ ...form, consultantId: e.target.value })} className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700">
-                <option value="">Sélectionner</option>
-                {consultants.map((consultant) => <option key={consultant.id} value={consultant.id}>{consultant.full_name || consultant.email}</option>)}
-              </select>
-            </label>
-
-            <label className="block">
-              <span className="mb-2 block text-sm font-semibold text-slate-700">Client facultatif</span>
-              <select value={form.clientId} onChange={(e) => setForm({ ...form, clientId: e.target.value })} className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700">
-                <option value="">Aucun</option>
-                {clients.map((client) => <option key={client.id} value={client.id}>{client.full_name || client.email}</option>)}
-              </select>
-            </label>
-
-            <label className="block">
-              <span className="mb-2 block text-sm font-semibold text-slate-700">Mois</span>
-              <input type="month" value={form.month} onChange={(e) => setForm({ ...form, month: e.target.value })} className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700" />
-            </label>
-
-            <Input label="Jours" type="number" value={form.workedDays} onChange={(v) => setForm({ ...form, workedDays: v })} />
-
-            <div className="flex items-end">
-              <button disabled={saving} className="min-h-12 w-full rounded-full bg-blue-700 px-6 py-3 font-semibold text-white hover:bg-blue-800 disabled:opacity-60">Créer</button>
-            </div>
-          </form>
-
-          {craMessage && <div className="mt-4"><Alert>{craMessage}</Alert></div>}
-        </div>
-      )}
-
+    <section className="mt-6 grid gap-6 lg:grid-cols-[420px_1fr]">
       <div className="rounded-[2rem] bg-white p-6 shadow-sm">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h2 className="text-2xl font-black text-slate-950">{isConsultant ? "Mes CRA" : "CRA"}</h2>
-            <p className="mt-2 text-sm text-slate-600">
-              {isClient ? "Valide ou refuse les CRA soumis. Le commentaire est facultatif." : isAdmin ? "Suivi global des CRA et validations." : "Consulte le statut de tes déclarations d’activité."}
-            </p>
-          </div>
+        <h2 className="text-2xl font-black">Déposer un document</h2>
+        <p className="mt-2 text-sm text-slate-600">Contrat, fiche de paie, CRA ou justificatif.</p>
 
-          <button onClick={onRefresh} className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800">Rafraîchir</button>
-        </div>
+        <form onSubmit={upload} className="mt-6 space-y-4">
+          {isAdmin && (
+            <Select label="Propriétaire" value={form.ownerId} onChange={(v) => setForm({ ...form, ownerId: v })}>
+              <option value="">Sélectionner</option>
+              {profiles.map((p) => <option key={p.id} value={p.id}>{p.full_name || p.email} — {roles[p.role]}</option>)}
+            </Select>
+          )}
 
+          <Input label="Titre du document" value={form.title} onChange={(v) => setForm({ ...form, title: v })} />
+          <Select label="Type de document" value={form.type} onChange={(v) => setForm({ ...form, type: v })}>
+            <option value="contrat">Contrat</option>
+            <option value="fiche_paie">Fiche de paie</option>
+            <option value="justificatif">Justificatif</option>
+            <option value="cra">CRA</option>
+            <option value="autre">Autre</option>
+          </Select>
+
+          <label className="block">
+            <span className="mb-2 block text-sm font-bold text-slate-700">Fichier</span>
+            <input id="doc-file" type="file" onChange={(e) => setForm({ ...form, file: e.target.files?.[0] || null })} className="w-full rounded-2xl border px-4 py-3" />
+          </label>
+
+          {msg && <Alert>{msg}</Alert>}
+
+          <button disabled={busy} className="w-full rounded-full bg-blue-700 px-6 py-3 font-bold text-white disabled:opacity-60">
+            {busy ? "Traitement..." : "Déposer le document"}
+          </button>
+        </form>
+      </div>
+
+      <Panel title="Documents" subtitle="Consulte, ouvre et supprime les documents déposés.">
         <div className="mt-6 flex flex-wrap gap-3">
-          <TabButton active={filter === "all"} onClick={() => setFilter("all")}>Tous</TabButton>
-          <TabButton active={filter === "submitted"} onClick={() => setFilter("submitted")}>Soumis</TabButton>
-          <TabButton active={filter === "approved"} onClick={() => setFilter("approved")}>Validés</TabButton>
-          <TabButton active={filter === "rejected"} onClick={() => setFilter("rejected")}>Refusés</TabButton>
+          {["all", "contrat", "fiche_paie", "justificatif", "cra"].map((v) => (
+            <Pill key={v} active={filter === v} onClick={() => setFilter(v)}>{v === "all" ? "Tous" : docTypes[v]}</Pill>
+          ))}
         </div>
 
         <div className="mt-6 overflow-hidden rounded-3xl border border-slate-100">
-          <div className="hidden grid-cols-7 bg-slate-50 px-5 py-4 text-xs font-bold uppercase tracking-wide text-slate-500 md:grid">
-            <span>Mois</span><span>Consultant</span><span>Client</span><span>Jours</span><span>Statut</span><span>Commentaire</span><span>Action</span>
-          </div>
-
-          {loading ? (
-            <div className="p-6 text-slate-600">Chargement des CRA...</div>
-          ) : visibleCras.length === 0 ? (
-            <div className="p-6 text-slate-600">Aucun CRA trouvé.</div>
-          ) : (
-            visibleCras.map((cra) => (
-              <CraRow key={cra.id} cra={cra} mode={mode} activeActionId={activeActionId} setActiveActionId={setActiveActionId} actionForm={actionForm} setActionForm={setActionForm} onDecision={decideCra} saving={saving} />
-            ))
-          )}
+          <HeaderRow cols="md:grid-cols-5" values={["Titre", "Type", "Propriétaire", "Date", "Action"]} />
+          {visible.length === 0 ? (
+            <Empty text="Aucun document trouvé." />
+          ) : visible.map((d) => (
+            <div key={d.id} className="grid gap-3 border-t border-slate-100 px-5 py-4 md:grid-cols-5 md:items-center">
+              <b>{d.title}</b>
+              <span className="text-sm">{docTypes[d.document_type] || d.document_type}</span>
+              <span className="text-sm">{d.profiles?.full_name || d.profiles?.email || "Utilisateur"}</span>
+              <span className="text-xs text-slate-500">{formatDate(d.created_at)}</span>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => openDoc(d)} className="rounded-full bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700">Ouvrir</button>
+                {(isAdmin || d.owner_id === profile.id) && <button onClick={() => deleteDoc(d)} className="rounded-full bg-red-50 px-4 py-2 text-sm font-bold text-red-700">Supprimer</button>}
+              </div>
+            </div>
+          ))}
         </div>
-      </div>
+      </Panel>
     </section>
   );
 }
 
-function CraRow({ cra, mode, profiles = [], activeActionId, setActiveActionId, actionForm, setActionForm, onDecision, onAssignClient, onDeleteCra, saving }) {
-  const isClient = mode === "client";
-  const isAdmin = mode === "admin";
-  const clients = profiles.filter((profile) => profile.role === "client");
-  const isConsultant = mode === "consultant";
-  const canDecide = (isClient || isAdmin) && cra.status === "submitted";
-  const canDelete = isAdmin || isConsultant;
-  const consultantName = cra.consultant?.full_name || cra.consultant?.email || "Consultant";
-  const clientName = cra.client?.full_name || cra.client?.email || "Aucun client";
-  const canSeeClientComment = isAdmin || cra.client_comment_visibility === "both";
-  const showActionForm = activeActionId === cra.id;
+function Cra({ profile, isAdmin, isClient, profiles, cras, onRefresh }) {
+  const consultants = profiles.filter((p) => p.role === "consultant");
+  const clients = profiles.filter((p) => p.role === "client");
+  const [form, setForm] = useState({
+    consultantId: isAdmin ? "" : profile.id,
+    clientId: "",
+    month: new Date().toISOString().slice(0, 7),
+    workedDays: 20,
+    extraHours: 0,
+    extraHoursRate: 44.64,
+    saturdayDays: 0,
+    saturdayRate: 223.21,
+  });
+  const [msg, setMsg] = useState("");
+  const [openId, setOpenId] = useState(null);
+  const [decision, setDecision] = useState({ comment: "", visibility: "both" });
+
+  async function createCra(e) {
+    e.preventDefault();
+    setMsg("");
+
+    try {
+      const consultantId = isAdmin ? form.consultantId : profile.id;
+      if (!consultantId) throw new Error("Sélectionne un consultant.");
+
+      const { error } = await supabase.from("cra").insert({
+        consultant_id: consultantId,
+        client_id: form.clientId || null,
+        month: `${form.month}-01`,
+        worked_days: Number(form.workedDays || 0),
+        extra_hours: Number(form.extraHours || 0),
+        extra_hours_rate: Number(form.extraHoursRate || 0),
+        saturday_days: Number(form.saturdayDays || 0),
+        saturday_rate: Number(form.saturdayRate || 0),
+        status: "submitted",
+        submitted_at: new Date().toISOString(),
+      });
+
+      if (error) throw error;
+      setMsg("CRA créé.");
+      await onRefresh();
+    } catch (error) {
+      setMsg(error.message || "Création impossible.");
+    }
+  }
+
+  async function decide(cra, status) {
+    setMsg("");
+    const { error } = await supabase.from("cra").update({
+      status,
+      client_comment: decision.comment || null,
+      client_comment_visibility: decision.visibility,
+      validated_at: new Date().toISOString(),
+      validated_by: profile.id,
+    }).eq("id", cra.id);
+
+    if (error) {
+      setMsg(error.message || "Action impossible.");
+      return;
+    }
+
+    setMsg(status === "approved" ? "CRA validé." : "CRA refusé.");
+    setOpenId(null);
+    setDecision({ comment: "", visibility: "both" });
+    await onRefresh();
+  }
+
+  async function deleteCra(cra) {
+    if (!window.confirm(`Supprimer le CRA de ${formatMonth(cra.month)} ?`)) return;
+    setMsg("");
+
+    try {
+      await supabase.from("invoices").delete().eq("cra_id", cra.id);
+      const { error } = await supabase.from("cra").delete().eq("id", cra.id);
+      if (error) throw error;
+      setMsg("CRA supprimé.");
+      await onRefresh();
+    } catch (error) {
+      setMsg(error.message || "Suppression impossible. Relance supabase-cra.sql.");
+    }
+  }
 
   return (
-    <div className="border-t border-slate-100 px-5 py-4">
-      <div className="grid gap-3 md:grid-cols-7 md:items-start">
-        <p className="font-bold text-slate-950">{formatMonth(cra.month)}</p>
-        <p className="text-sm text-slate-700">{consultantName}</p>
-        <p className="text-sm text-slate-700">{clientName}</p>
-        <p className="text-sm font-semibold text-slate-900">{cra.worked_days}</p>
-        <p><span className={`rounded-full px-3 py-2 text-xs font-bold ${cra.status === "approved" ? "bg-green-50 text-green-700" : cra.status === "rejected" ? "bg-red-50 text-red-700" : "bg-blue-50 text-blue-700"}`}>{craStatusLabels[cra.status] || cra.status}</span></p>
-        <div className="space-y-2 text-sm text-slate-700">
-          {cra.consultant_comment && <p><span className="font-bold">Consultant :</span> {cra.consultant_comment}</p>}
-          {cra.client_comment && canSeeClientComment && <p><span className="font-bold">Client :</span> {cra.client_comment}</p>}
-          {cra.client_comment && isAdmin && <p className="text-xs text-slate-500">Visibilité : {commentVisibilityLabels[cra.client_comment_visibility] || cra.client_comment_visibility}</p>}
-          {!cra.consultant_comment && !cra.client_comment && <p className="text-slate-400">Aucun</p>}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {canDecide && (
-            <button
-              onClick={() => setActiveActionId(showActionForm ? null : cra.id)}
-              className="rounded-full bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100"
-            >
-              Traiter
-            </button>
-          )}
+    <section className="mt-6 space-y-6">
+      {!isClient && (
+        <div className="rounded-[2rem] bg-white p-6 shadow-sm">
+          <h2 className="text-2xl font-black">{isAdmin ? "Créer un CRA pour un consultant" : "Créer mon CRA"}</h2>
+          <form onSubmit={createCra} className="mt-6 grid gap-4 md:grid-cols-4">
+            {isAdmin && (
+              <Select label="Consultant" value={form.consultantId} onChange={(v) => setForm({ ...form, consultantId: v })}>
+                <option value="">Sélectionner</option>
+                {consultants.map((p) => <option key={p.id} value={p.id}>{p.full_name || p.email}</option>)}
+              </Select>
+            )}
 
-          {canDelete && (
-            <button
-              onClick={() => onDeleteCra?.(cra)}
-              disabled={saving}
-              className="rounded-full bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-100 disabled:opacity-60"
-            >
-              Supprimer
-            </button>
-          )}
+            <Select label="Client facultatif" value={form.clientId} onChange={(v) => setForm({ ...form, clientId: v })}>
+              <option value="">Aucun</option>
+              {clients.map((p) => <option key={p.id} value={p.id}>{p.full_name || p.email}</option>)}
+            </Select>
 
-          {!canDecide && !canDelete && <span className="text-sm text-slate-400">—</span>}
-        </div>
-      </div>
+            <Input label="Mois" type="month" value={form.month} onChange={(v) => setForm({ ...form, month: v })} />
+            <Input label="Jours" type="number" value={form.workedDays} onChange={(v) => setForm({ ...form, workedDays: v })} />
+            <Input label="Heures supp" type="number" value={form.extraHours} onChange={(v) => setForm({ ...form, extraHours: v })} />
+            <Input label="Taux heure supp HT" type="number" value={form.extraHoursRate} onChange={(v) => setForm({ ...form, extraHoursRate: v })} />
+            <Input label="Samedis" type="number" value={form.saturdayDays} onChange={(v) => setForm({ ...form, saturdayDays: v })} />
+            <Input label="Taux samedi HT" type="number" value={form.saturdayRate} onChange={(v) => setForm({ ...form, saturdayRate: v })} />
 
-      {showActionForm && (
-        <div className="mt-4 rounded-3xl bg-slate-50 p-4">
-          <label className="block">
-            <span className="mb-2 block text-sm font-semibold text-slate-700">Commentaire facultatif</span>
-            <textarea value={actionForm.comment} onChange={(e) => setActionForm({ ...actionForm, comment: e.target.value })} className="min-h-24 w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700" placeholder="Ex : validé, précision, motif de refus..." />
-          </label>
-
-          <label className="mt-4 block">
-            <span className="mb-2 block text-sm font-semibold text-slate-700">Qui peut voir le commentaire ?</span>
-            <select value={actionForm.visibility} onChange={(e) => setActionForm({ ...actionForm, visibility: e.target.value })} className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700">
-              <option value="both">Admin + consultant</option>
-              <option value="admin_only">Admin uniquement</option>
-            </select>
-          </label>
-
-          <div className="mt-4 flex flex-wrap gap-3">
-            <button disabled={saving} onClick={() => onDecision(cra, "approved")} className="rounded-full bg-green-600 px-5 py-3 text-sm font-semibold text-white hover:bg-green-700 disabled:opacity-60">Valider</button>
-            <button disabled={saving} onClick={() => onDecision(cra, "rejected")} className="rounded-full bg-red-600 px-5 py-3 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60">Refuser</button>
-            <button disabled={saving} onClick={() => setActiveActionId(null)} className="rounded-full bg-white px-5 py-3 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-100 disabled:opacity-60">Annuler</button>
-          </div>
+            <div className="flex items-end">
+              <button className="w-full rounded-full bg-blue-700 px-6 py-3 font-bold text-white">Créer</button>
+            </div>
+          </form>
         </div>
       )}
-    </div>
+
+      <Panel title="CRA" subtitle="Suivi global des CRA et validations.">
+        {msg && <Alert>{msg}</Alert>}
+
+        <div className="mt-6 overflow-hidden rounded-3xl border border-slate-100">
+          <HeaderRow cols="md:grid-cols-7" values={["Mois", "Consultant", "Client", "Temps", "Statut", "Commentaire", "Action"]} />
+          {cras.length === 0 ? (
+            <Empty text="Aucun CRA trouvé." />
+          ) : cras.map((c) => {
+            const canDecide = (isAdmin || isClient) && c.status === "submitted";
+            const canDelete = isAdmin || c.consultant_id === profile.id;
+
+            return (
+              <div key={c.id} className="border-t border-slate-100">
+                <div className="grid gap-3 px-5 py-4 md:grid-cols-7 md:items-center">
+                  <b>{formatMonth(c.month)}</b>
+                  <span className="text-sm">{c.consultant?.full_name || c.consultant?.email || "-"}</span>
+                  <span className="text-sm">{c.client?.full_name || c.client?.email || "Aucun client"}</span>
+                  <span className="text-sm">{c.worked_days} j<br />{Number(c.extra_hours || 0)} h supp<br />{Number(c.saturday_days || 0)} samedi</span>
+                  <Badge status={c.status}>{statuses[c.status] || c.status}</Badge>
+                  <span className="text-sm text-slate-600">{c.client_comment || "Aucun"}</span>
+                  <div className="flex flex-wrap gap-2">
+                    {canDecide && <button onClick={() => setOpenId(openId === c.id ? null : c.id)} className="rounded-full bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700">Traiter</button>}
+                    {canDelete && <button onClick={() => deleteCra(c)} className="rounded-full bg-red-50 px-4 py-2 text-sm font-bold text-red-700">Supprimer</button>}
+                  </div>
+                </div>
+
+                {openId === c.id && (
+                  <div className="mx-5 mb-5 rounded-3xl bg-slate-50 p-5">
+                    <label className="block">
+                      <span className="mb-2 block text-sm font-bold">Commentaire facultatif</span>
+                      <textarea value={decision.comment} onChange={(e) => setDecision({ ...decision, comment: e.target.value })} className="min-h-24 w-full rounded-2xl border px-4 py-3" />
+                    </label>
+
+                    <Select label="Qui peut voir le commentaire ?" value={decision.visibility} onChange={(v) => setDecision({ ...decision, visibility: v })}>
+                      <option value="both">Admin + consultant</option>
+                      <option value="admin_only">Admin uniquement</option>
+                    </Select>
+
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <button onClick={() => decide(c, "approved")} className="rounded-full bg-green-600 px-5 py-3 font-bold text-white">Valider</button>
+                      <button onClick={() => decide(c, "rejected")} className="rounded-full bg-red-600 px-5 py-3 font-bold text-white">Refuser</button>
+                      <button onClick={() => setOpenId(null)} className="rounded-full bg-white px-5 py-3 font-bold">Annuler</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Panel>
+    </section>
   );
 }
 
-
-
-function InvoicesManager({ currentProfile, cras, invoices, loading, onRefresh }) {
-  const approvedCras = cras.filter((cra) => cra.status === "approved");
-  const [selectedCraId, setSelectedCraId] = useState(approvedCras[0]?.id || "");
-  const [saving, setSaving] = useState(false);
-  const [invoiceMessage, setInvoiceMessage] = useState("");
+function Invoices({ profile, cras, invoices, onRefresh }) {
+  const approved = cras.filter((c) => c.status === "approved");
+  const [selectedId, setSelectedId] = useState("");
+  const selected = approved.find((c) => c.id === selectedId) || approved[0] || null;
+  const [msg, setMsg] = useState("");
   const [form, setForm] = useState({
-    invoiceNumber: buildInvoiceNumber(),
-    invoiceDate: new Date().toISOString().slice(0, 10),
+    number: invoiceNumber(),
+    date: new Date().toISOString().slice(0, 10),
     clientName: "",
     clientAddress: "",
     clientEmail: "",
     clientRef: "",
     supplierOrder: "",
     paymentTerms: "Dans un délai de 30 jours",
-    description: "Prestation de conseil",
     dailyRate: 250,
-    extraHoursQty: 0,
-    extraHoursRate: 44.64,
-    saturdayQty: 0,
-    saturdayRate: 223.21,
     vatRate: 20,
   });
 
-  const selectedCra = approvedCras.find((cra) => cra.id === selectedCraId);
+  useEffect(() => {
+    if (!selectedId && approved[0]) setSelectedId(approved[0].id);
+  }, [approved.length]);
 
   useEffect(() => {
-    if (!selectedCra) return;
-
-    setForm((prev) => ({
-      ...prev,
-      clientName: selectedCra.client?.full_name || selectedCra.client?.email || prev.clientName || "",
-      clientEmail: selectedCra.client?.email || prev.clientEmail || "",
-      description: prev.description || "Prestation de conseil",
+    if (!selected) return;
+    setForm((p) => ({
+      ...p,
+      clientName: selected.client?.full_name || selected.client?.email || p.clientName,
+      clientEmail: selected.client?.email || p.clientEmail,
     }));
-  }, [selectedCraId]);
+  }, [selected?.id]);
 
-  const invoiceData = buildInvoiceData(selectedCra, form);
+  const invoice = selected ? makeInvoice(selected, form) : null;
 
-  async function saveInvoice() {
-    if (!selectedCra) {
-      setInvoiceMessage("Aucun CRA validé sélectionné.");
+  async function save() {
+    if (!invoice || !selected) {
+      setMsg("Aucun CRA validé sélectionné.");
       return;
     }
 
-    setSaving(true);
-    setInvoiceMessage("");
+    const { error } = await supabase.from("invoices").upsert({
+      cra_id: selected.id,
+      invoice_number: form.number,
+      data: invoice,
+      subtotal: invoice.subtotal,
+      vat_amount: invoice.vat,
+      total: invoice.total,
+      created_by: profile.id,
+    }, { onConflict: "cra_id" });
 
-    try {
-      const { error } = await supabase.from("invoices").upsert({
-        cra_id: selectedCra.id,
-        invoice_number: form.invoiceNumber,
-        data: invoiceData,
-        subtotal: invoiceData.subtotal,
-        vat_amount: invoiceData.vatAmount,
-        total: invoiceData.total,
-        created_by: currentProfile.id,
-      }, { onConflict: "cra_id" });
-
-      if (error) throw error;
-
-      setInvoiceMessage("Facture générée et enregistrée.");
-      await onRefresh();
-    } catch (error) {
-      setInvoiceMessage(error.message || "Impossible d’enregistrer la facture.");
-    } finally {
-      setSaving(false);
+    if (error) {
+      setMsg(error.message || "Impossible d’enregistrer la facture.");
+      return;
     }
+
+    setMsg("Facture enregistrée.");
+    await onRefresh();
   }
 
   return (
     <section className="mt-6 grid gap-6 lg:grid-cols-[430px_1fr]">
       <div className="rounded-[2rem] bg-white p-6 shadow-sm">
-        <h2 className="text-2xl font-black text-slate-950">Générer une facture</h2>
-        <p className="mt-2 text-sm text-slate-600">
-          La facture se génère uniquement à partir d’un CRA validé.
-        </p>
+        <h2 className="text-2xl font-black">Générer une facture</h2>
+        <p className="mt-2 text-sm text-slate-600">Depuis un CRA validé.</p>
 
-        {approvedCras.length === 0 ? (
-          <Alert>Aucun CRA validé disponible. Il faut d’abord qu’un CRA soit validé par le client ou l’admin.</Alert>
+        {approved.length === 0 ? (
+          <div className="mt-6"><Alert>Aucun CRA validé disponible.</Alert></div>
         ) : (
           <div className="mt-6 space-y-4">
-            <label className="block">
-              <span className="mb-2 block text-sm font-semibold text-slate-700">CRA validé</span>
-              <select
-                value={selectedCraId}
-                onChange={(e) => setSelectedCraId(e.target.value)}
-                className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700"
-              >
-                {approvedCras.map((cra) => (
-                  <option key={cra.id} value={cra.id}>
-                    {formatMonth(cra.month)} — {cra.consultant?.full_name || cra.consultant?.email} — {cra.worked_days} j
-                  </option>
-                ))}
-              </select>
-            </label>
+            <Select label="CRA validé" value={selectedId || selected?.id || ""} onChange={setSelectedId}>
+              {approved.map((c) => <option key={c.id} value={c.id}>{formatMonth(c.month)} — {c.consultant?.full_name || c.consultant?.email} — {c.worked_days} j</option>)}
+            </Select>
 
-            <Input label="N° facture" value={form.invoiceNumber} onChange={(v) => setForm({ ...form, invoiceNumber: v })} />
-            <Input label="Date facture" type="date" value={form.invoiceDate} onChange={(v) => setForm({ ...form, invoiceDate: v })} />
+            <Input label="N° facture" value={form.number} onChange={(v) => setForm({ ...form, number: v })} />
+            <Input label="Date facture" type="date" value={form.date} onChange={(v) => setForm({ ...form, date: v })} />
             <Input label="Client à facturer" value={form.clientName} onChange={(v) => setForm({ ...form, clientName: v })} />
-
             <label className="block">
-              <span className="mb-2 block text-sm font-semibold text-slate-700">Adresse client</span>
-              <textarea
-                value={form.clientAddress}
-                onChange={(e) => setForm({ ...form, clientAddress: e.target.value })}
-                className="min-h-24 w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700"
-                placeholder="Adresse complète du client"
-              />
+              <span className="mb-2 block text-sm font-bold">Adresse client</span>
+              <textarea value={form.clientAddress} onChange={(e) => setForm({ ...form, clientAddress: e.target.value })} className="min-h-24 w-full rounded-2xl border px-4 py-3" />
             </label>
-
             <Input label="Email client" value={form.clientEmail} onChange={(v) => setForm({ ...form, clientEmail: v })} />
             <Input label="Réf client" value={form.clientRef} onChange={(v) => setForm({ ...form, clientRef: v })} />
             <Input label="Commande fournisseur" value={form.supplierOrder} onChange={(v) => setForm({ ...form, supplierOrder: v })} />
             <Input label="Conditions" value={form.paymentTerms} onChange={(v) => setForm({ ...form, paymentTerms: v })} />
-            <Input label="Description principale" value={form.description} onChange={(v) => setForm({ ...form, description: v })} />
             <Input label="Prix journalier HT" type="number" value={form.dailyRate} onChange={(v) => setForm({ ...form, dailyRate: v })} />
-            <Input label="Heures supplémentaires - quantité" type="number" value={form.extraHoursQty} onChange={(v) => setForm({ ...form, extraHoursQty: v })} />
-            <Input label="Heures supplémentaires - prix HT" type="number" value={form.extraHoursRate} onChange={(v) => setForm({ ...form, extraHoursRate: v })} />
-            <Input label="Samedi travaillé - quantité" type="number" value={form.saturdayQty} onChange={(v) => setForm({ ...form, saturdayQty: v })} />
-            <Input label="Samedi travaillé - prix HT" type="number" value={form.saturdayRate} onChange={(v) => setForm({ ...form, saturdayRate: v })} />
             <Input label="TVA %" type="number" value={form.vatRate} onChange={(v) => setForm({ ...form, vatRate: v })} />
 
-            {invoiceMessage && <Alert>{invoiceMessage}</Alert>}
+            {msg && <Alert>{msg}</Alert>}
 
-            <button
-              disabled={saving}
-              onClick={saveInvoice}
-              className="min-h-12 w-full rounded-full bg-blue-700 px-6 py-3 font-semibold text-white hover:bg-blue-800 disabled:opacity-60"
-            >
-              {saving ? "Enregistrement..." : "Enregistrer la facture"}
-            </button>
-
-            <button
-              onClick={() => printInvoice(invoiceData)}
-              className="min-h-12 w-full rounded-full bg-slate-950 px-6 py-3 font-semibold text-white hover:bg-slate-800"
-            >
-              Imprimer / Exporter PDF
-            </button>
+            <button onClick={save} className="w-full rounded-full bg-blue-700 px-6 py-3 font-bold text-white">Enregistrer la facture</button>
+            <button onClick={() => window.print()} className="w-full rounded-full bg-slate-950 px-6 py-3 font-bold text-white">Imprimer / Exporter PDF</button>
           </div>
         )}
       </div>
 
       <div className="space-y-6">
-        <InvoicePreview invoice={invoiceData} />
+        <InvoicePreview invoice={invoice} />
 
-        <div className="rounded-[2rem] bg-white p-6 shadow-sm">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <h2 className="text-2xl font-black text-slate-950">Factures enregistrées</h2>
-              <p className="mt-2 text-sm text-slate-600">Historique des factures générées.</p>
-            </div>
-            <button onClick={onRefresh} className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800">
-              Rafraîchir
-            </button>
-          </div>
-
+        <Panel title="Factures enregistrées" subtitle="Historique des factures générées.">
           <div className="mt-6 overflow-hidden rounded-3xl border border-slate-100">
-            <div className="hidden grid-cols-5 bg-slate-50 px-5 py-4 text-xs font-bold uppercase tracking-wide text-slate-500 md:grid">
-              <span>N°</span><span>Client</span><span>Total</span><span>Date</span><span>Action</span>
-            </div>
-
-            {loading ? (
-              <div className="p-6 text-slate-600">Chargement des factures...</div>
-            ) : invoices.length === 0 ? (
-              <div className="p-6 text-slate-600">Aucune facture enregistrée.</div>
-            ) : (
-              invoices.map((invoice) => (
-                <div key={invoice.id} className="grid gap-3 border-t border-slate-100 px-5 py-4 md:grid-cols-5 md:items-center">
-                  <p className="font-bold">{invoice.invoice_number}</p>
-                  <p className="text-sm text-slate-700">{invoice.data?.client?.name || "-"}</p>
-                  <p className="text-sm font-semibold">{formatCurrency(invoice.total)}</p>
-                  <p className="text-xs text-slate-500">{formatDate(invoice.created_at)}</p>
-                  <button onClick={() => printInvoice(invoice.data)} className="w-fit rounded-full bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100">
-                    PDF
-                  </button>
-                </div>
-              ))
-            )}
+            <HeaderRow cols="md:grid-cols-5" values={["N°", "Client", "Total", "Date", "Action"]} />
+            {invoices.length === 0 ? <Empty text="Aucune facture enregistrée." /> : invoices.map((i) => (
+              <div key={i.id} className="grid gap-3 border-t border-slate-100 px-5 py-4 md:grid-cols-5 md:items-center">
+                <b>{i.invoice_number}</b>
+                <span className="text-sm">{i.data?.client?.name || "-"}</span>
+                <span className="text-sm font-bold">{money(i.total)}</span>
+                <span className="text-xs text-slate-500">{formatDate(i.created_at)}</span>
+                <button onClick={() => window.print()} className="w-fit rounded-full bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700">PDF</button>
+              </div>
+            ))}
           </div>
-        </div>
+        </Panel>
       </div>
     </section>
   );
 }
 
 function InvoicePreview({ invoice }) {
-  if (!invoice?.cra) {
-    return (
-      <div className="rounded-[2rem] bg-white p-6 shadow-sm">
-        <h2 className="text-2xl font-black text-slate-950">Aperçu facture</h2>
-        <p className="mt-2 text-sm text-slate-600">Sélectionne un CRA validé pour générer l’aperçu.</p>
-      </div>
-    );
-  }
+  if (!invoice) return <Panel title="Aperçu facture" subtitle="Sélectionne un CRA validé." />;
 
   return (
-    <div className="rounded-[2rem] bg-white p-6 shadow-sm">
-      <div className="overflow-hidden rounded-3xl border border-slate-100 bg-white p-6">
-        <InvoiceHtml invoice={invoice} />
-      </div>
-    </div>
-  );
-}
-
-function InvoiceHtml({ invoice }) {
-  return (
-    <div className="bg-white text-sm text-slate-950">
-      <div className="flex flex-col justify-between gap-6 md:flex-row">
+    <div id="invoice-print" className="rounded-[2rem] bg-white p-8 shadow-sm">
+      <div className="flex items-start justify-between gap-6">
         <div>
-          <h1 className="text-3xl font-black text-blue-800">{COMPANY_INVOICE_INFO.name}</h1>
-          <p className="mt-2 font-semibold">{COMPANY_INVOICE_INFO.legalName}</p>
-          <p>{COMPANY_INVOICE_INFO.address}</p>
-          <p>Téléphone : {COMPANY_INVOICE_INFO.phone}</p>
-          <p>{COMPANY_INVOICE_INFO.email}</p>
+          <h2 className="text-3xl font-black text-blue-800">LRN INFO</h2>
+          <p className="mt-2 text-sm font-bold">{COMPANY.name}</p>
+          <p className="text-sm">{COMPANY.address}</p>
+          <p className="text-sm">Téléphone : {COMPANY.phone}</p>
+          <p className="text-sm">SIRET : {COMPANY.siret}</p>
         </div>
-        <div className="text-left md:text-right">
-          <h2 className="text-4xl font-black text-blue-700">FACTURE</h2>
-          <p className="mt-3"><b>N° facture :</b> {invoice.invoiceNumber}</p>
-          <p><b>Date :</b> {formatDateOnly(invoice.invoiceDate)}</p>
-          <p><b>N° TVA :</b> {COMPANY_INVOICE_INFO.vatNumber}</p>
+        <div className="text-right">
+          <h1 className="text-4xl font-black text-blue-700">FACTURE</h1>
+          <p className="mt-3"><b>N° :</b> {invoice.number}</p>
+          <p><b>Date :</b> {formatDate(invoice.date)}</p>
         </div>
       </div>
 
       <div className="mt-8 grid gap-6 md:grid-cols-2">
         <div>
-          <h3 className="bg-blue-700 px-3 py-2 font-bold text-white">FACTURER À</h3>
-          <div className="border border-slate-200 p-3">
+          <h3 className="bg-blue-700 px-3 py-2 text-sm font-bold uppercase text-white">Facturer à</h3>
+          <div className="p-3 text-sm">
             <p className="font-bold">{invoice.client.name || "-"}</p>
-            <p className="whitespace-pre-line">{invoice.client.address || "-"}</p>
-            <p>{invoice.client.email || ""}</p>
+            <p className="whitespace-pre-line">{invoice.client.address}</p>
+            <p>{invoice.client.email}</p>
           </div>
         </div>
         <div>
-          <h3 className="bg-blue-700 px-3 py-2 font-bold text-white">CONDITIONS</h3>
-          <div className="border border-slate-200 p-3">
+          <h3 className="bg-blue-700 px-3 py-2 text-sm font-bold uppercase text-white">Conditions</h3>
+          <div className="p-3 text-sm">
             <p><b>Réf client :</b> {invoice.clientRef || "-"}</p>
-            <p><b>Commande fournisseur :</b> {invoice.supplierOrder || "-"}</p>
-            <p><b>Paiement :</b> {invoice.paymentTerms || "-"}</p>
+            <p><b>Commande :</b> {invoice.supplierOrder || "-"}</p>
+            <p><b>Paiement :</b> {invoice.paymentTerms}</p>
+            <p><b>TVA :</b> {COMPANY.vat}</p>
           </div>
         </div>
       </div>
 
-      <div className="mt-8 overflow-x-auto">
-        <table className="w-full border-collapse text-left text-sm">
-          <thead>
-            <tr className="bg-blue-700 text-white">
-              <th className="p-2">DESCRIPTION</th>
-              <th className="p-2 text-right">QTÉ</th>
-              <th className="p-2 text-right">PRIX HT</th>
-              <th className="p-2 text-right">MONTANT HT</th>
+      <table className="mt-8 w-full border-collapse text-sm">
+        <thead>
+          <tr className="bg-blue-700 text-white">
+            <th className="p-2 text-left">Description</th>
+            <th className="p-2 text-right">Qté</th>
+            <th className="p-2 text-right">Prix HT</th>
+            <th className="p-2 text-right">Montant HT</th>
+          </tr>
+        </thead>
+        <tbody>
+          {invoice.lines.map((line, index) => (
+            <tr key={index} className="border-b">
+              <td className="p-2">{line.description}</td>
+              <td className="p-2 text-right">{line.quantity}</td>
+              <td className="p-2 text-right">{money(line.unitPrice)}</td>
+              <td className="p-2 text-right">{money(line.amount)}</td>
             </tr>
-          </thead>
-          <tbody>
-            {invoice.lines.map((line, index) => (
-              <tr key={index} className="border-b border-slate-200">
-                <td className="p-2">{line.description}</td>
-                <td className="p-2 text-right">{line.quantity}</td>
-                <td className="p-2 text-right">{formatCurrency(line.unitPrice)}</td>
-                <td className="p-2 text-right">{formatCurrency(line.amount)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+          ))}
+        </tbody>
+      </table>
+
+      <div className="ml-auto mt-6 w-full max-w-sm rounded-xl bg-blue-50 p-4 text-sm">
+        <div className="flex justify-between"><span>Sous-total HT</span><b>{money(invoice.subtotal)}</b></div>
+        <div className="flex justify-between"><span>TVA {invoice.vatRate}%</span><b>{money(invoice.vat)}</b></div>
+        <div className="mt-2 flex justify-between text-xl"><span>Total</span><b>{money(invoice.total)}</b></div>
       </div>
 
-      <div className="mt-6 flex justify-end">
-        <div className="w-full max-w-sm rounded-2xl bg-blue-50 p-4">
-          <div className="flex justify-between"><span>Sous-total HT</span><b>{formatCurrency(invoice.subtotal)}</b></div>
-          <div className="flex justify-between"><span>TVA {invoice.vatRate}%</span><b>{formatCurrency(invoice.vatAmount)}</b></div>
-          <div className="mt-3 flex justify-between border-t border-blue-100 pt-3 text-xl"><span>TOTAL</span><b>{formatCurrency(invoice.total)}</b></div>
-        </div>
+      <div className="mt-8 rounded-xl border p-4 text-sm">
+        <h3 className="font-black text-blue-700">Détails bancaires</h3>
+        <p>IBAN : {COMPANY.iban}</p>
+        <p>BIC : {COMPANY.bic}</p>
       </div>
-
-      <div className="mt-8 rounded-2xl border-2 border-slate-900 p-4">
-        <h3 className="mb-3 bg-blue-700 px-3 py-2 text-center font-bold text-white">Détails bancaires</h3>
-        <p><b>Titulaire :</b> {COMPANY_INVOICE_INFO.legalName}</p>
-        <p><b>IBAN :</b> {COMPANY_INVOICE_INFO.iban}</p>
-        <p><b>BIC :</b> {COMPANY_INVOICE_INFO.bic}</p>
-        <p className="mt-2 text-right"><b>SIRET :</b> {COMPANY_INVOICE_INFO.siret}</p>
-      </div>
-
-      <p className="mt-6 text-center text-lg font-bold text-blue-700">Merci pour votre confiance !</p>
     </div>
   );
 }
 
-function buildInvoiceData(cra, form) {
-  if (!cra) return null;
-
-  const workedDays = Number(cra.worked_days || 0);
-  const dailyRate = Number(form.dailyRate || 0);
-  const extraHoursQty = Number(form.extraHoursQty || 0);
-  const extraHoursRate = Number(form.extraHoursRate || 0);
-  const saturdayQty = Number(form.saturdayQty || 0);
-  const saturdayRate = Number(form.saturdayRate || 0);
+function makeInvoice(cra, form) {
+  const daily = Number(form.dailyRate || 0);
+  const days = Number(cra.worked_days || 0);
+  const extraHours = Number(cra.extra_hours || 0);
+  const extraRate = Number(cra.extra_hours_rate || 0);
+  const saturdayDays = Number(cra.saturday_days || 0);
+  const saturdayRate = Number(cra.saturday_rate || 0);
   const vatRate = Number(form.vatRate || 0);
 
   const lines = [
-    {
-      description: `${form.description || "Prestation de conseil"} - ${formatMonth(cra.month)}`,
-      quantity: workedDays,
-      unitPrice: dailyRate,
-      amount: workedDays * dailyRate,
-    },
+    { description: `Prestation de conseil - ${formatMonth(cra.month)}`, quantity: days, unitPrice: daily, amount: days * daily },
   ];
 
-  if (extraHoursQty > 0) {
-    lines.push({ description: "Heures supplémentaires", quantity: extraHoursQty, unitPrice: extraHoursRate, amount: extraHoursQty * extraHoursRate });
-  }
-
-  if (saturdayQty > 0) {
-    lines.push({ description: "Samedi travaillé", quantity: saturdayQty, unitPrice: saturdayRate, amount: saturdayQty * saturdayRate });
-  }
+  if (extraHours > 0) lines.push({ description: "Heures supplémentaires", quantity: extraHours, unitPrice: extraRate, amount: extraHours * extraRate });
+  if (saturdayDays > 0) lines.push({ description: "Samedi travaillé", quantity: saturdayDays, unitPrice: saturdayRate, amount: saturdayDays * saturdayRate });
 
   const subtotal = lines.reduce((sum, line) => sum + line.amount, 0);
-  const vatAmount = subtotal * vatRate / 100;
-  const total = subtotal + vatAmount;
+  const vat = subtotal * vatRate / 100;
+  const total = subtotal + vat;
 
   return {
-    invoiceNumber: form.invoiceNumber,
-    invoiceDate: form.invoiceDate,
-    cra: {
-      id: cra.id,
-      month: cra.month,
-      workedDays: workedDays,
-      consultant: cra.consultant?.full_name || cra.consultant?.email || "",
-      status: cra.status,
-      validatedAt: cra.validated_at,
-    },
-    client: {
-      name: form.clientName,
-      address: form.clientAddress,
-      email: form.clientEmail,
-    },
+    number: form.number,
+    date: form.date,
+    client: { name: form.clientName, address: form.clientAddress, email: form.clientEmail },
     clientRef: form.clientRef,
     supplierOrder: form.supplierOrder,
     paymentTerms: form.paymentTerms,
     vatRate,
     lines,
     subtotal,
-    vatAmount,
+    vat,
     total,
   };
-}
-
-function printInvoice(invoice) {
-  if (!invoice) return;
-
-  const html = buildInvoicePrintHtml(invoice);
-  const printWindow = window.open("", "_blank", "width=1100,height=900");
-
-  if (!printWindow) {
-    alert("Autorise les popups pour exporter la facture en PDF.");
-    return;
-  }
-
-  printWindow.document.write(html);
-  printWindow.document.close();
-  printWindow.focus();
-  setTimeout(() => printWindow.print(), 500);
-}
-
-function buildInvoicePrintHtml(invoice) {
-  const rows = invoice.lines.map((line) => `
-    <tr>
-      <td>${escapeHtml(line.description)}</td>
-      <td style="text-align:right">${line.quantity}</td>
-      <td style="text-align:right">${formatCurrency(line.unitPrice)}</td>
-      <td style="text-align:right">${formatCurrency(line.amount)}</td>
-    </tr>
-  `).join("");
-
-  return `<!doctype html>
-<html lang="fr">
-<head>
-<meta charset="utf-8" />
-<title>Facture ${escapeHtml(invoice.invoiceNumber)}</title>
-<style>
-  body { font-family: Arial, sans-serif; margin: 32px; color: #0f172a; }
-  .top { display:flex; justify-content:space-between; gap:32px; }
-  h1 { color:#1d4ed8; margin:0; font-size:34px; }
-  h2 { color:#1d4ed8; margin:0; font-size:44px; text-align:right; }
-  .blue { background:#1d4ed8; color:white; padding:8px 10px; font-weight:bold; }
-  .box { border:1px solid #cbd5e1; padding:12px; min-height:90px; }
-  .grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-top:34px; }
-  table { width:100%; border-collapse:collapse; margin-top:34px; }
-  th { background:#1d4ed8; color:white; padding:9px; text-align:left; }
-  td { border-bottom:1px solid #cbd5e1; padding:9px; }
-  .totals { margin-left:auto; margin-top:24px; width:330px; background:#dbeafe; padding:16px; }
-  .line { display:flex; justify-content:space-between; margin:7px 0; }
-  .total { border-top:1px solid #93c5fd; padding-top:10px; font-size:22px; font-weight:bold; }
-  .bank { border:3px solid #0f172a; margin-top:34px; padding:14px; width:620px; }
-  .thanks { text-align:center; color:#1d4ed8; font-size:20px; font-weight:bold; margin-top:26px; }
-  @media print { button { display:none; } body { margin: 18px; } }
-</style>
-</head>
-<body>
-  <div class="top">
-    <div>
-      <h1>${escapeHtml(COMPANY_INVOICE_INFO.name)}</h1>
-      <p><b>${escapeHtml(COMPANY_INVOICE_INFO.legalName)}</b><br>
-      ${escapeHtml(COMPANY_INVOICE_INFO.address)}<br>
-      Téléphone : ${escapeHtml(COMPANY_INVOICE_INFO.phone)}<br>
-      ${escapeHtml(COMPANY_INVOICE_INFO.email)}</p>
-    </div>
-    <div>
-      <h2>FACTURE</h2>
-      <p style="text-align:right"><b>N° facture :</b> ${escapeHtml(invoice.invoiceNumber)}<br>
-      <b>Date :</b> ${formatDateOnly(invoice.invoiceDate)}<br>
-      <b>N° TVA :</b> ${escapeHtml(COMPANY_INVOICE_INFO.vatNumber)}</p>
-    </div>
-  </div>
-
-  <div class="grid">
-    <div>
-      <div class="blue">FACTURER À</div>
-      <div class="box"><b>${escapeHtml(invoice.client.name || "-")}</b><br>${escapeHtml(invoice.client.address || "-").replaceAll("\\n", "<br>")}<br>${escapeHtml(invoice.client.email || "")}</div>
-    </div>
-    <div>
-      <div class="blue">CONDITIONS</div>
-      <div class="box"><b>Réf client :</b> ${escapeHtml(invoice.clientRef || "-")}<br>
-      <b>Commande fournisseur :</b> ${escapeHtml(invoice.supplierOrder || "-")}<br>
-      <b>Paiement :</b> ${escapeHtml(invoice.paymentTerms || "-")}</div>
-    </div>
-  </div>
-
-  <table>
-    <thead><tr><th>DESCRIPTION</th><th style="text-align:right">QTÉ</th><th style="text-align:right">PRIX HT</th><th style="text-align:right">MONTANT HT</th></tr></thead>
-    <tbody>${rows}</tbody>
-  </table>
-
-  <div class="totals">
-    <div class="line"><span>Sous-total HT</span><b>${formatCurrency(invoice.subtotal)}</b></div>
-    <div class="line"><span>TVA ${invoice.vatRate}%</span><b>${formatCurrency(invoice.vatAmount)}</b></div>
-    <div class="line total"><span>TOTAL</span><b>${formatCurrency(invoice.total)}</b></div>
-  </div>
-
-  <div class="bank">
-    <div class="blue" style="text-align:center">Détails bancaires</div>
-    <p><b>Titulaire :</b> ${escapeHtml(COMPANY_INVOICE_INFO.legalName)}<br>
-    <b>IBAN :</b> ${escapeHtml(COMPANY_INVOICE_INFO.iban)}<br>
-    <b>BIC :</b> ${escapeHtml(COMPANY_INVOICE_INFO.bic)}</p>
-    <p style="text-align:right"><b>SIRET :</b> ${escapeHtml(COMPANY_INVOICE_INFO.siret)}</p>
-  </div>
-
-  <p class="thanks">Merci pour votre confiance !</p>
-</body>
-</html>`;
-}
-
-function buildInvoiceNumber() {
-  const now = new Date();
-  return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
-}
-
-function formatCurrency(value) {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(Number(value || 0));
-}
-
-function formatDateOnly(dateValue) {
-  if (!dateValue) return "-";
-  return new Intl.DateTimeFormat("fr-FR").format(new Date(dateValue));
-}
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-
-function Header({ signOut }) {
-  return (
-    <header className="sticky top-0 z-40 border-b border-slate-100 bg-white/90 backdrop-blur">
-      <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-4 md:px-6">
-        <Logo />
-        <button onClick={signOut} className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800">
-          Déconnexion
-        </button>
-      </div>
-    </header>
-  );
-}
-
-function Hero({ role, title }) {
-  return (
-    <section className="rounded-[2rem] bg-gradient-to-br from-slate-950 via-slate-900 to-blue-950 p-6 text-white md:p-10">
-      <p className="inline-flex rounded-full border border-blue-400/30 bg-blue-500/10 px-4 py-2 text-sm text-blue-100">
-        {role}
-      </p>
-      <h1 className="mt-5 text-3xl font-black leading-tight md:text-5xl">{title}</h1>
-      <p className="mt-4 max-w-2xl leading-8 text-slate-300">
-        Bienvenue dans votre espace connecté LRN PORTAGE.
-      </p>
-    </section>
-  );
-}
-
-function ComingSoon({ title, text }) {
-  return (
-    <section className="mt-6 rounded-[2rem] bg-white p-8 shadow-sm">
-      <p className="mb-3 inline-flex rounded-full bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700">Bientôt</p>
-      <h2 className="text-2xl font-black text-slate-950">{title}</h2>
-      <p className="mt-3 max-w-2xl leading-7 text-slate-600">{text}</p>
-    </section>
-  );
-}
-
-function ConfigMissing() {
-  return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-white">
-      <div className="max-w-2xl rounded-[2rem] bg-white p-8 text-slate-950 shadow-2xl">
-        <h1 className="text-3xl font-black">Configuration Supabase manquante</h1>
-        <p className="mt-4 leading-7 text-slate-700">
-          Ajoute ces variables dans Vercel ou dans un fichier <code className="rounded bg-slate-100 px-2 py-1">.env</code> en local :
-        </p>
-        <pre className="mt-5 overflow-x-auto rounded-2xl bg-slate-950 p-5 text-sm text-blue-100">
-{`VITE_SUPABASE_URL=ton_project_url
-VITE_SUPABASE_ANON_KEY=ta_anon_public_key`}
-        </pre>
-      </div>
-    </main>
-  );
-}
-
-function Loader({ text }) {
-  return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-white">
-      <div className="rounded-[2rem] bg-white/10 p-8 text-center">
-        <div className="mx-auto mb-5 h-10 w-10 animate-spin rounded-full border-4 border-blue-300 border-t-transparent" />
-        <p className="font-semibold">{text}</p>
-      </div>
-    </main>
-  );
-}
-
-function Logo({ light = false }) {
-  return (
-    <div className="flex items-end gap-2">
-      <span className={`text-2xl font-black tracking-tight md:text-3xl ${light ? "text-white" : "text-slate-950"}`}>LRN</span>
-      <span className="mb-1 text-sm font-semibold tracking-[0.35em] text-blue-500">PORTAGE</span>
-    </div>
-  );
-}
-
-function Panel({ title, children }) {
-  return (
-    <div className="rounded-[2rem] bg-white p-6 shadow-sm">
-      <h2 className="text-xl font-black text-slate-950">{title}</h2>
-      <div className="mt-5 space-y-3">{children}</div>
-    </div>
-  );
-}
-
-function ActionButton({ label, onClick }) {
-  return (
-    <button onClick={onClick} className="flex w-full items-center justify-between rounded-2xl bg-slate-50 px-4 py-4 text-left font-semibold text-slate-800 hover:bg-blue-50">
-      {label}
-      <span className="text-blue-700">→</span>
-    </button>
-  );
-}
-
-function TabButton({ active, onClick, children }) {
-  return (
-    <button
-      onClick={onClick}
-      className={active
-        ? "rounded-full bg-blue-700 px-5 py-3 text-sm font-semibold text-white"
-        : "rounded-full bg-white px-5 py-3 text-sm font-semibold text-slate-700 shadow-sm hover:bg-blue-50 hover:text-blue-700"
-      }
-    >
-      {children}
-    </button>
-  );
-}
-
-function StatCard({ title, value, text }) {
-  return (
-    <div className="rounded-[2rem] bg-white p-6 shadow-sm">
-      <p className="text-sm font-semibold text-blue-700">{title}</p>
-      <p className="mt-3 text-2xl font-black text-slate-950">{value}</p>
-      <p className="mt-2 text-sm leading-6 text-slate-600">{text}</p>
-    </div>
-  );
-}
-
-function InfoLine({ label, value }) {
-  return (
-    <div className="rounded-2xl bg-slate-50 p-4">
-      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
-      <p className="mt-1 break-all font-semibold text-slate-900">{value}</p>
-    </div>
-  );
-}
-
-function Alert({ children }) {
-  return (
-    <div className="mb-6 rounded-2xl bg-yellow-50 p-4 text-sm leading-6 text-yellow-900">
-      {children}
-    </div>
-  );
 }
 
 function Input({ label, value, onChange, type = "text" }) {
   return (
     <label className="block">
-      <span className="mb-2 block text-sm font-semibold text-slate-700">{label}</span>
-      <input
-        type={type}
-        required
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700"
-      />
+      <span className="mb-2 block text-sm font-bold text-slate-700">{label}</span>
+      <input type={type} value={value ?? ""} onChange={(e) => onChange(e.target.value)} className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700" />
     </label>
   );
 }
 
-function formatMonth(dateValue) {
-  if (!dateValue) return "-";
-  return new Intl.DateTimeFormat("fr-FR", {
-    month: "long",
-    year: "numeric",
-  }).format(new Date(dateValue));
+function Select({ label, value, onChange, children }) {
+  return (
+    <label className="block">
+      <span className="mb-2 block text-sm font-bold text-slate-700">{label}</span>
+      <select value={value ?? ""} onChange={(e) => onChange(e.target.value)} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none focus:border-blue-700">
+        {children}
+      </select>
+    </label>
+  );
 }
 
-function formatDate(dateValue) {
-  if (!dateValue) return "-";
-  return new Intl.DateTimeFormat("fr-FR", {
-    dateStyle: "short",
-    timeStyle: "short",
-  }).format(new Date(dateValue));
+function Panel({ title, subtitle, children }) {
+  return (
+    <section className="rounded-[2rem] bg-white p-6 shadow-sm">
+      <h2 className="text-2xl font-black text-slate-950">{title}</h2>
+      {subtitle && <p className="mt-2 text-sm text-slate-600">{subtitle}</p>}
+      {children}
+    </section>
+  );
+}
+
+function Hero({ role, title }) {
+  return (
+    <div className="rounded-[2rem] bg-gradient-to-br from-slate-950 to-blue-950 p-8 text-white md:p-12">
+      <span className="rounded-full border border-blue-500/50 px-4 py-2 text-sm">{role}</span>
+      <h1 className="mt-8 text-4xl font-black md:text-5xl">{title}</h1>
+      <p className="mt-4 text-slate-200">Bienvenue dans votre espace connecté LRN PORTAGE.</p>
+    </div>
+  );
+}
+
+function Logo({ light = false }) {
+  return (
+    <div className={`text-2xl font-black tracking-tight ${light ? "text-white" : "text-slate-950"}`}>
+      LRN <span className="text-sm font-bold tracking-[0.4em] text-blue-500">PORTAGE</span>
+    </div>
+  );
+}
+
+function Stat({ title, value, text }) {
+  return (
+    <div className="rounded-[1.5rem] bg-white p-6 shadow-sm">
+      <p className="text-sm font-bold text-blue-700">{title}</p>
+      <p className="mt-3 text-3xl font-black">{value}</p>
+      <p className="mt-2 text-sm text-slate-600">{text}</p>
+    </div>
+  );
+}
+
+function Pill({ active, onClick, children }) {
+  return (
+    <button onClick={onClick} className={`rounded-full px-6 py-3 text-sm font-bold shadow-sm ${active ? "bg-blue-700 text-white" : "bg-white text-slate-950"}`}>
+      {children}
+    </button>
+  );
+}
+
+function Action({ label, onClick }) {
+  return (
+    <button onClick={onClick} className="flex w-full items-center justify-between rounded-2xl bg-slate-50 px-5 py-4 font-bold hover:bg-blue-50">
+      {label}<span>→</span>
+    </button>
+  );
+}
+
+function Info({ label, value }) {
+  return (
+    <div className="rounded-2xl bg-slate-50 p-4">
+      <p className="text-xs font-bold uppercase text-slate-500">{label}</p>
+      <p className="mt-1 break-all font-bold">{value}</p>
+    </div>
+  );
+}
+
+function HeaderRow({ cols, values }) {
+  return (
+    <div className={`hidden ${cols} bg-slate-50 px-5 py-4 text-xs font-bold uppercase tracking-wide text-slate-500 md:grid`}>
+      {values.map((v) => <span key={v}>{v}</span>)}
+    </div>
+  );
+}
+
+function Empty({ text }) {
+  return <div className="border-t border-slate-100 p-6 text-slate-600">{text}</div>;
+}
+
+function Alert({ children }) {
+  return <div className="my-4 rounded-2xl bg-yellow-50 p-4 text-sm text-yellow-900">{children}</div>;
+}
+
+function Badge({ status, children }) {
+  const cls = status === "approved" ? "bg-green-50 text-green-700" : status === "rejected" ? "bg-red-50 text-red-700" : "bg-blue-50 text-blue-700";
+  return <span className={`w-fit rounded-full px-3 py-2 text-sm font-bold ${cls}`}>{children}</span>;
+}
+
+function FullPage({ text }) {
+  return <div className="grid min-h-screen place-items-center bg-slate-50 text-xl font-black">{text}</div>;
+}
+
+function formatDate(value) {
+  if (!value) return "-";
+  return new Date(value).toLocaleDateString("fr-FR");
+}
+
+function formatMonth(value) {
+  if (!value) return "-";
+  return new Date(value).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+}
+
+function money(value) {
+  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(Number(value || 0));
+}
+
+function invoiceNumber() {
+  const now = new Date();
+  return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
 }

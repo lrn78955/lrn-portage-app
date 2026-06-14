@@ -1,6 +1,4 @@
--- LRN PORTAGE APP V5 - Factures générées depuis CRA
--- À exécuter dans Supabase > SQL Editor
-
+-- LRN PORTAGE APP - Factures
 create table if not exists public.invoices (
   id uuid primary key default gen_random_uuid(),
   cra_id uuid not null references public.cra(id) on delete cascade,
@@ -22,10 +20,8 @@ security definer
 set search_path = public
 as $$
   select exists (
-    select 1
-    from public.profiles
-    where id = auth.uid()
-      and role = 'admin'
+    select 1 from public.profiles
+    where id = auth.uid() and role = 'admin'
   );
 $$;
 
