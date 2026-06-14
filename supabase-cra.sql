@@ -106,3 +106,14 @@ using (
   public.is_admin()
   or auth.uid() = consultant_id
 );
+
+
+-- V5.5 - Suppression CRA par admin ou consultant propriétaire
+drop policy if exists "CRA delete access" on public.cra;
+
+create policy "CRA delete access"
+on public.cra for delete
+using (
+  public.is_admin()
+  or auth.uid() = consultant_id
+);
