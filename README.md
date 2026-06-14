@@ -1,28 +1,28 @@
-# LRN PORTAGE APP
+# LRN PORTAGE APP V2
 
-Application connectée pour LRN PORTAGE.
+Application connectée LRN PORTAGE.
 
-## Installation
+## Nouveautés V2
 
-```bash
-npm install
-npm run dev
-```
+- dashboard admin amélioré
+- gestion des profils
+- filtres consultants / clients / admin
+- changement de rôle depuis l'interface admin
+- compteurs dynamiques
 
-## Supabase
+## Important Supabase
 
-1. Va dans Supabase > SQL Editor
-2. Exécute le fichier `supabase-schema.sql`
-3. Va dans Project Settings > API
-4. Copie :
-   - Project URL
-   - anon public key
+Après avoir déployé cette V2, exécuter dans Supabase > SQL Editor :
+
+`supabase-admin-policies.sql`
+
+Cela permet à l'administrateur de voir et gérer les profils.
 
 ## Vercel
 
-Ajoute ces variables dans Settings > Environment Variables :
+Variables nécessaires :
 
 ```bash
-VITE_SUPABASE_URL=ton_project_url
-VITE_SUPABASE_ANON_KEY=ta_anon_public_key
+VITE_SUPABASE_URL=...
+VITE_SUPABASE_ANON_KEY=...
 ```
