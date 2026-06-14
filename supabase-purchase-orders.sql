@@ -1,4 +1,4 @@
--- LRN PORTAGE APP - Bons de commande / Purchase Orders V5.8.9
+-- LRN PORTAGE APP - Bons de commande / Purchase Orders V5.8.10
 
 create or replace function public.is_admin()
 returns boolean

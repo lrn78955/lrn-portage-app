@@ -1,4 +1,4 @@
--- LRN PORTAGE APP - Documents V5.8.9
+-- LRN PORTAGE APP - Documents V5.8.10
 create table if not exists public.documents (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null references public.profiles(id) on delete cascade,
@@ -12,6 +12,12 @@ create table if not exists public.documents (
 alter table public.documents add column if not exists shared_with_id uuid references public.profiles(id) on delete set null;
 
 alter table public.documents enable row level security;
+
+-- Confidentialité : les bons de commande ne doivent jamais être visibles par les consultants.
+update public.documents
+set shared_with_id = null
+where document_type = 'bon_commande';
+
 
 insert into storage.buckets (id, name, public)
 values ('documents', 'documents', false)
@@ -38,7 +44,7 @@ on public.documents for select
 using (
   public.is_admin()
   or owner_id = auth.uid()
-  or shared_with_id = auth.uid()
+  or (shared_with_id = auth.uid() and document_type <> 'bon_commande')
 );
 
 create policy "Documents insert access"
@@ -46,7 +52,7 @@ on public.documents for insert
 with check (
   public.is_admin()
   or owner_id = auth.uid()
-  or shared_with_id = auth.uid()
+  or (shared_with_id = auth.uid() and document_type <> 'bon_commande')
 );
 
 create policy "Documents delete access"
@@ -69,6 +75,7 @@ using (
       select 1 from public.documents d
       where d.file_path = storage.objects.name
       and d.shared_with_id = auth.uid()
+      and d.document_type <> 'bon_commande' 
     )
   )
 );

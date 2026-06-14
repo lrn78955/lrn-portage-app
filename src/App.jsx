@@ -478,7 +478,7 @@ function Profiles({ profiles, assignments, onRefresh }) {
 
       const docResult = await supabase.from("documents").insert({
         owner_id: linkForm.clientId,
-        shared_with_id: linkForm.consultantId,
+        shared_with_id: null,
         title: `Bon de commande ${linkForm.orderNumber.trim()}`,
         document_type: "bon_commande",
         file_path: path,
@@ -578,7 +578,7 @@ function Profiles({ profiles, assignments, onRefresh }) {
         </div>
       </Panel>
 
-      <Panel title="Affiliation + bon de commande obligatoire" subtitle="Associe un consultant à un client et rattache le bon de commande PDF avec ses informations de facturation.">
+      <Panel title="Affiliation + bon de commande obligatoire" subtitle="Associe un consultant à un client. Le bon de commande PDF est obligatoire et reste visible uniquement par l’admin et le client.">
         <form onSubmit={linkConsultantClient} className="mt-4 grid gap-4 md:grid-cols-2">
           <Select label="Consultant" value={linkForm.consultantId} onChange={(v) => setLinkForm({ ...linkForm, consultantId: v })}>
             <option value="">Sélectionner un consultant</option>
@@ -651,7 +651,13 @@ function Documents({ profile, isAdmin, profiles, documents, onRefresh }) {
   const [filter, setFilter] = useState("all");
   const [busy, setBusy] = useState(false);
 
-  const visible = documents.filter((d) => filter === "all" || d.document_type === filter);
+  const filterOptions = profile.role === "consultant"
+    ? ["all", "contrat", "fiche_paie", "justificatif", "cra", "facture", "autre"]
+    : ["all", "contrat", "fiche_paie", "justificatif", "cra", "facture", "bon_commande", "autre"];
+  const visible = documents.filter((d) => {
+    if (profile.role === "consultant" && d.document_type === "bon_commande") return false;
+    return filter === "all" || d.document_type === filter;
+  });
 
   async function upload(e) {
     e.preventDefault();
@@ -691,6 +697,20 @@ function Documents({ profile, isAdmin, profiles, documents, onRefresh }) {
   }
 
   async function openDoc(doc) {
+    if (doc.document_type === "facture" || doc.file_path?.toLowerCase().endsWith(".html")) {
+      const { data, error } = await supabase.storage.from(BUCKET).download(doc.file_path);
+      if (error) {
+        alert(error.message || "Impossible d’ouvrir la facture.");
+        return;
+      }
+      const html = await data.text();
+      const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank", "noopener,noreferrer");
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      return;
+    }
+
     const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(doc.file_path, 120);
     if (error) {
       alert(error.message || "Impossible d’ouvrir le document.");
@@ -756,7 +776,7 @@ function Documents({ profile, isAdmin, profiles, documents, onRefresh }) {
 
       <Panel title="Documents" subtitle="Consulte, ouvre et supprime les documents déposés.">
         <div className="mt-6 flex flex-wrap gap-3">
-          {["all", "contrat", "fiche_paie", "justificatif", "cra", "facture", "bon_commande"].map((v) => (
+          {filterOptions.map((v) => (
             <Pill key={v} active={filter === v} onClick={() => setFilter(v)}>{v === "all" ? "Tous" : docTypes[v]}</Pill>
           ))}
         </div>
@@ -1111,6 +1131,7 @@ function Invoices({ profile, profiles, cras, invoices, purchaseOrders, onRefresh
     vatRate: 20,
     file: null,
   });
+  const [showPoManager, setShowPoManager] = useState(false);
 
   useEffect(() => {
     if (!selectedId && approved[0]) setSelectedId(approved[0].id);
@@ -1196,7 +1217,7 @@ function Invoices({ profile, profiles, cras, invoices, purchaseOrders, onRefresh
 
       const docResult = await supabase.from("documents").insert({
         owner_id: poForm.clientId,
-        shared_with_id: poForm.consultantId,
+        shared_with_id: null,
         title: `Bon de commande ${poForm.orderNumber.trim()}`,
         document_type: "bon_commande",
         file_path: path,
@@ -1343,11 +1364,19 @@ function Invoices({ profile, profiles, cras, invoices, purchaseOrders, onRefresh
 
   return (
     <section className="mt-6 grid gap-6 lg:grid-cols-[430px_1fr]">
-      <div className="space-y-6">
-        <div className="rounded-[2rem] bg-white p-6 shadow-sm">
-          <h2 className="text-2xl font-black">Préenregistrer un bon de commande</h2>
-          <p className="mt-2 text-sm text-slate-600">Le bon de commande PDF est obligatoire. Il préremplit le client, la référence, le TJM, le taux d’heure supp et la date de validité.</p>
+      <div className="flex flex-col gap-6">
+        <div className="order-2 rounded-[2rem] bg-white p-6 shadow-sm">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-2xl font-black">Préenregistrer un bon de commande</h2>
+              <p className="mt-2 text-sm text-slate-600">Section pliable. Le bon de commande papier/PDF est obligatoire et reste visible uniquement par l’admin et le client.</p>
+            </div>
+            <button type="button" onClick={() => setShowPoManager(!showPoManager)} className="rounded-full bg-slate-950 px-5 py-3 text-sm font-bold text-white">
+              {showPoManager ? "Replier" : "Déplier"}
+            </button>
+          </div>
 
+          {showPoManager && (<>
           <form onSubmit={savePurchaseOrder} className="mt-6 space-y-4">
             <Select label="Consultant" value={poForm.consultantId} onChange={(v) => setPoForm({ ...poForm, consultantId: v })}>
               <option value="">Sélectionner un consultant</option>
@@ -1406,9 +1435,10 @@ function Invoices({ profile, profiles, cras, invoices, purchaseOrders, onRefresh
               </div>
             ))}
           </div>
+          </>)}
         </div>
 
-        <div className="rounded-[2rem] bg-white p-6 shadow-sm">
+        <div className="order-1 rounded-[2rem] bg-white p-6 shadow-sm">
           <h2 className="text-2xl font-black">Générer une facture</h2>
           <p className="mt-2 text-sm text-slate-600">Depuis un CRA validé et un bon de commande encore valide pour le mois du CRA.</p>
 
@@ -1589,10 +1619,10 @@ async function saveInvoiceAsDocument(invoice, cra, invoiceRowId, title) {
   const safeTitle = cleanTitle.replace(/[^a-zA-Z0-9À-ÿ ._\-]/g, "_");
   const fileName = `${safeTitle}-${invoiceRowId}.html`;
   const path = `${ownerId}/${Date.now()}-${fileName}`;
-  const blob = new Blob([invoiceHtmlDocument(invoice)], { type: "text/html;charset=utf-8" });
+  const blob = new Blob(["\ufeff", invoiceHtmlDocument(invoice)], { type: "text/html;charset=utf-8" });
 
   const uploadResult = await supabase.storage.from(BUCKET).upload(path, blob, {
-    contentType: "text/html;charset=utf-8",
+    contentType: "text/html; charset=utf-8",
     upsert: true,
   });
   if (uploadResult.error) throw uploadResult.error;
