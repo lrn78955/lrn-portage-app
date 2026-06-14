@@ -19,6 +19,7 @@ const docTypes = {
   fiche_paie: "Fiche de paie",
   justificatif: "Justificatif",
   cra: "CRA",
+  facture: "Facture",
   autre: "Autre",
 };
 
@@ -519,7 +520,7 @@ function Documents({ profile, isAdmin, profiles, documents, onRefresh }) {
 
       <Panel title="Documents" subtitle="Consulte, ouvre et supprime les documents déposés.">
         <div className="mt-6 flex flex-wrap gap-3">
-          {["all", "contrat", "fiche_paie", "justificatif", "cra"].map((v) => (
+          {["all", "contrat", "fiche_paie", "justificatif", "cra", "facture"].map((v) => (
             <Pill key={v} active={filter === v} onClick={() => setFilter(v)}>{v === "all" ? "Tous" : docTypes[v]}</Pill>
           ))}
         </div>
@@ -561,6 +562,8 @@ function Cra({ profile, isAdmin, isClient, profiles, cras, onRefresh }) {
   });
   const [msg, setMsg] = useState("");
   const [openId, setOpenId] = useState(null);
+  const [pricingOpenId, setPricingOpenId] = useState(null);
+  const [pricingForm, setPricingForm] = useState({});
   const [decision, setDecision] = useState({ comment: "", visibility: "both" });
 
   async function createCra(e) {
@@ -577,9 +580,9 @@ function Cra({ profile, isAdmin, isClient, profiles, cras, onRefresh }) {
         month: `${form.month}-01`,
         worked_days: Number(form.workedDays || 0),
         extra_hours: Number(form.extraHours || 0),
-        extra_hours_rate: Number(form.extraHoursRate || 0),
-        saturday_days: Number(form.saturdayDays || 0),
-        saturday_rate: Number(form.saturdayRate || 0),
+        extra_hours_rate: isAdmin ? Number(form.extraHoursRate || 0) : 0,
+        saturday_days: 0,
+        saturday_rate: 0,
         status: "submitted",
         submitted_at: new Date().toISOString(),
       });
@@ -613,6 +616,39 @@ function Cra({ profile, isAdmin, isClient, profiles, cras, onRefresh }) {
     await onRefresh();
   }
 
+  function openPricing(cra) {
+    setPricingOpenId(pricingOpenId === cra.id ? null : cra.id);
+    setPricingForm({
+      extra_hours_rate: cra.extra_hours_rate ?? 44.64,
+      saturday_rate: cra.saturday_rate ?? 223.21,
+      worked_days: cra.worked_days ?? 0,
+      extra_hours: cra.extra_hours ?? 0,
+      saturday_days: cra.saturday_days ?? 0,
+    });
+  }
+
+  async function updateCraPricing(cra) {
+    setMsg("");
+
+    const { error } = await supabase.from("cra").update({
+      worked_days: Number(pricingForm.worked_days || 0),
+      extra_hours: Number(pricingForm.extra_hours || 0),
+      extra_hours_rate: Number(pricingForm.extra_hours_rate || 0),
+      saturday_days: 0,
+      saturday_rate: 0,
+      updated_at: new Date().toISOString(),
+    }).eq("id", cra.id);
+
+    if (error) {
+      setMsg(error.message || "Impossible de mettre à jour les informations de facturation.");
+      return;
+    }
+
+    setMsg("Informations de facturation mises à jour.");
+    setPricingOpenId(null);
+    await onRefresh();
+  }
+
   async function deleteCra(cra) {
     if (!window.confirm(`Supprimer le CRA de ${formatMonth(cra.month)} ?`)) return;
     setMsg("");
@@ -633,6 +669,7 @@ function Cra({ profile, isAdmin, isClient, profiles, cras, onRefresh }) {
       {!isClient && (
         <div className="rounded-[2rem] bg-white p-6 shadow-sm">
           <h2 className="text-2xl font-black">{isAdmin ? "Créer un CRA pour un consultant" : "Créer mon CRA"}</h2>
+          {!isAdmin && <p className="mt-2 text-sm text-slate-600">Renseigne uniquement le nombre de jours travaillés et le nombre d’heures supplémentaires du mois. Les taux et prix sont gérés par l’administrateur.</p>}
           <form onSubmit={createCra} className="mt-6 grid gap-4 md:grid-cols-4">
             {isAdmin && (
               <Select label="Consultant" value={form.consultantId} onChange={(v) => setForm({ ...form, consultantId: v })}>
@@ -647,11 +684,18 @@ function Cra({ profile, isAdmin, isClient, profiles, cras, onRefresh }) {
             </Select>
 
             <Input label="Mois" type="month" value={form.month} onChange={(v) => setForm({ ...form, month: v })} />
-            <Input label="Jours" type="number" value={form.workedDays} onChange={(v) => setForm({ ...form, workedDays: v })} />
-            <Input label="Heures supp" type="number" value={form.extraHours} onChange={(v) => setForm({ ...form, extraHours: v })} />
-            <Input label="Taux heure supp HT" type="number" value={form.extraHoursRate} onChange={(v) => setForm({ ...form, extraHoursRate: v })} />
-            <Input label="Samedis" type="number" value={form.saturdayDays} onChange={(v) => setForm({ ...form, saturdayDays: v })} />
-            <Input label="Taux samedi HT" type="number" value={form.saturdayRate} onChange={(v) => setForm({ ...form, saturdayRate: v })} />
+            {isAdmin ? (
+              <>
+                <Input label="Jours travaillés" type="number" value={form.workedDays} onChange={(v) => setForm({ ...form, workedDays: v })} />
+                <Input label="Heures supp" type="number" value={form.extraHours} onChange={(v) => setForm({ ...form, extraHours: v })} />
+                <Input label="Taux heure supp HT" type="number" value={form.extraHoursRate} onChange={(v) => setForm({ ...form, extraHoursRate: v })} />
+              </>
+            ) : (
+              <>
+                <Input label="Nombre de jours travaillés dans le mois" type="number" value={form.workedDays} onChange={(v) => setForm({ ...form, workedDays: v })} />
+                <Input label="Nombre d’heures supp dans le mois" type="number" value={form.extraHours} onChange={(v) => setForm({ ...form, extraHours: v })} />
+              </>
+            )}
 
             <div className="flex items-end">
               <button className="w-full rounded-full bg-blue-700 px-6 py-3 font-bold text-white">Créer</button>
@@ -677,14 +721,35 @@ function Cra({ profile, isAdmin, isClient, profiles, cras, onRefresh }) {
                   <b>{formatMonth(c.month)}</b>
                   <span className="text-sm">{c.consultant?.full_name || c.consultant?.email || "-"}</span>
                   <span className="text-sm">{c.client?.full_name || c.client?.email || "Aucun client"}</span>
-                  <span className="text-sm">{c.worked_days} j<br />{Number(c.extra_hours || 0)} h supp<br />{Number(c.saturday_days || 0)} samedi</span>
+                  <span className="text-sm">{Number(c.worked_days || 0)} j<br />{Number(c.extra_hours || 0)} h supp</span>
                   <Badge status={c.status}>{statuses[c.status] || c.status}</Badge>
                   <span className="text-sm text-slate-600">{c.client_comment || "Aucun"}</span>
                   <div className="flex flex-wrap gap-2">
                     {canDecide && <button onClick={() => setOpenId(openId === c.id ? null : c.id)} className="rounded-full bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700">Traiter</button>}
+                    {isAdmin && <button onClick={() => openPricing(c)} className="rounded-full bg-slate-100 px-4 py-2 text-sm font-bold text-slate-800">Tarifs admin</button>}
                     {canDelete && <button onClick={() => deleteCra(c)} className="rounded-full bg-red-50 px-4 py-2 text-sm font-bold text-red-700">Supprimer</button>}
                   </div>
                 </div>
+
+                {isAdmin && pricingOpenId === c.id && (
+                  <div className="mx-5 mb-5 rounded-3xl bg-slate-50 p-5">
+                    <h3 className="text-lg font-black">Informations de facturation admin</h3>
+                    <p className="mt-1 text-sm text-slate-600">
+                      Ces montants ne sont visibles que par l’administrateur. Le consultant ne voit pas les taux.
+                    </p>
+
+                    <div className="mt-4 grid gap-4 md:grid-cols-5">
+                      <Input label="Jours" type="number" value={pricingForm.worked_days} onChange={(v) => setPricingForm({ ...pricingForm, worked_days: v })} />
+                      <Input label="Heures supp" type="number" value={pricingForm.extra_hours} onChange={(v) => setPricingForm({ ...pricingForm, extra_hours: v })} />
+                      <Input label="Taux heure supp HT" type="number" value={pricingForm.extra_hours_rate} onChange={(v) => setPricingForm({ ...pricingForm, extra_hours_rate: v })} />
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <button onClick={() => updateCraPricing(c)} className="rounded-full bg-blue-700 px-5 py-3 font-bold text-white">Enregistrer tarifs</button>
+                      <button onClick={() => setPricingOpenId(null)} className="rounded-full bg-white px-5 py-3 font-bold">Annuler</button>
+                    </div>
+                  </div>
+                )}
 
                 {openId === c.id && (
                   <div className="mx-5 mb-5 rounded-3xl bg-slate-50 p-5">
@@ -719,6 +784,7 @@ function Invoices({ profile, cras, invoices, onRefresh }) {
   const [selectedId, setSelectedId] = useState("");
   const selected = approved.find((c) => c.id === selectedId) || approved[0] || null;
   const [msg, setMsg] = useState("");
+  const [documentTitle, setDocumentTitle] = useState("");
   const [form, setForm] = useState({
     number: invoiceNumber(),
     date: new Date().toISOString().slice(0, 10),
@@ -726,7 +792,7 @@ function Invoices({ profile, cras, invoices, onRefresh }) {
     clientAddress: "",
     clientEmail: "",
     clientRef: "",
-    supplierOrder: "",
+    purchaseOrder: "",
     paymentTerms: "Dans un délai de 30 jours",
     dailyRate: 250,
     vatRate: 20,
@@ -743,6 +809,8 @@ function Invoices({ profile, cras, invoices, onRefresh }) {
       clientName: selected.client?.full_name || selected.client?.email || p.clientName,
       clientEmail: selected.client?.email || p.clientEmail,
     }));
+
+    setDocumentTitle(defaultInvoiceDocumentTitle(selected));
   }, [selected?.id]);
 
   const invoice = selected ? makeInvoice(selected, form) : null;
@@ -753,7 +821,12 @@ function Invoices({ profile, cras, invoices, onRefresh }) {
       return;
     }
 
-    const { error } = await supabase.from("invoices").upsert({
+    if (!form.purchaseOrder.trim()) {
+      setMsg("Le bon de commande est obligatoire pour générer la facture.");
+      return;
+    }
+
+    const { data, error } = await supabase.from("invoices").upsert({
       cra_id: selected.id,
       invoice_number: form.number,
       data: invoice,
@@ -761,14 +834,37 @@ function Invoices({ profile, cras, invoices, onRefresh }) {
       vat_amount: invoice.vat,
       total: invoice.total,
       created_by: profile.id,
-    }, { onConflict: "cra_id" });
+    }, { onConflict: "cra_id" }).select("id").single();
 
     if (error) {
       setMsg(error.message || "Impossible d’enregistrer la facture.");
       return;
     }
 
-    setMsg("Facture enregistrée.");
+    try {
+      await saveInvoiceAsDocument(invoice, selected, data.id, documentTitle);
+      setMsg("Facture enregistrée et ajoutée dans les documents.");
+    } catch (documentError) {
+      setMsg(`Facture enregistrée, mais impossible de l’ajouter aux documents : ${documentError.message}`);
+    }
+
+    await onRefresh();
+  }
+
+  async function deleteInvoice(invoiceToDelete) {
+    if (!window.confirm(`Supprimer la facture ${invoiceToDelete.invoice_number} ?`)) return;
+
+    const { error } = await supabase
+      .from("invoices")
+      .delete()
+      .eq("id", invoiceToDelete.id);
+
+    if (error) {
+      setMsg(error.message || "Suppression de facture impossible.");
+      return;
+    }
+
+    setMsg("Facture supprimée.");
     await onRefresh();
   }
 
@@ -795,10 +891,11 @@ function Invoices({ profile, cras, invoices, onRefresh }) {
             </label>
             <Input label="Email client" value={form.clientEmail} onChange={(v) => setForm({ ...form, clientEmail: v })} />
             <Input label="Réf client" value={form.clientRef} onChange={(v) => setForm({ ...form, clientRef: v })} />
-            <Input label="Commande fournisseur" value={form.supplierOrder} onChange={(v) => setForm({ ...form, supplierOrder: v })} />
+            <Input label="Bon de commande obligatoire" value={form.purchaseOrder} onChange={(v) => setForm({ ...form, purchaseOrder: v })} />
             <Input label="Conditions" value={form.paymentTerms} onChange={(v) => setForm({ ...form, paymentTerms: v })} />
             <Input label="Prix journalier HT" type="number" value={form.dailyRate} onChange={(v) => setForm({ ...form, dailyRate: v })} />
             <Input label="TVA %" type="number" value={form.vatRate} onChange={(v) => setForm({ ...form, vatRate: v })} />
+            <Input label="Nom du document facture" value={documentTitle} onChange={setDocumentTitle} />
 
             {msg && <Alert>{msg}</Alert>}
 
@@ -820,7 +917,10 @@ function Invoices({ profile, cras, invoices, onRefresh }) {
                 <span className="text-sm">{i.data?.client?.name || "-"}</span>
                 <span className="text-sm font-bold">{money(i.total)}</span>
                 <span className="text-xs text-slate-500">{formatDate(i.created_at)}</span>
-                <button onClick={() => window.print()} className="w-fit rounded-full bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700">PDF</button>
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => window.print()} className="w-fit rounded-full bg-blue-50 px-4 py-2 text-sm font-bold text-blue-700">PDF</button>
+                  <button onClick={() => deleteInvoice(i)} className="w-fit rounded-full bg-red-50 px-4 py-2 text-sm font-bold text-red-700">Supprimer</button>
+                </div>
               </div>
             ))}
           </div>
@@ -829,6 +929,133 @@ function Invoices({ profile, cras, invoices, onRefresh }) {
     </section>
   );
 }
+
+
+function invoiceHtmlDocument(invoice) {
+  const rows = invoice.lines.map((line) => `
+    <tr>
+      <td>${escapeHtml(line.description)}</td>
+      <td style="text-align:right">${escapeHtml(String(line.quantity))}</td>
+      <td style="text-align:right">${money(line.unitPrice)}</td>
+      <td style="text-align:right">${money(line.amount)}</td>
+    </tr>
+  `).join("");
+
+  return `<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Facture ${escapeHtml(invoice.number)}</title>
+  <style>
+    body { font-family: Arial, sans-serif; color:#020617; margin:40px; }
+    .top { display:flex; justify-content:space-between; gap:30px; }
+    h1 { color:#1d4ed8; font-size:42px; margin:0; }
+    h2 { color:#1e40af; font-size:34px; margin:0; }
+    .blue { background:#1d4ed8; color:white; padding:10px; font-weight:bold; text-transform:uppercase; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-top:32px; }
+    table { width:100%; border-collapse:collapse; margin-top:32px; }
+    th { background:#1d4ed8; color:white; padding:10px; text-align:left; }
+    td { padding:10px; border-bottom:1px solid #e2e8f0; }
+    .total { margin-left:auto; margin-top:24px; width:320px; background:#eff6ff; padding:18px; border-radius:12px; }
+    .line { display:flex; justify-content:space-between; margin:6px 0; }
+    .big { font-size:22px; font-weight:bold; }
+    .bank { margin-top:32px; border:1px solid #0f172a; padding:18px; }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <div>
+      <h2>LRN INFO</h2>
+      <p><b>${escapeHtml(COMPANY.name)}</b><br>
+      ${escapeHtml(COMPANY.address)}<br>
+      Téléphone : ${escapeHtml(COMPANY.phone)}<br>
+      SIRET : ${escapeHtml(COMPANY.siret)}</p>
+    </div>
+    <div style="text-align:right">
+      <h1>FACTURE</h1>
+      <p><b>N° :</b> ${escapeHtml(invoice.number)}<br>
+      <b>Date :</b> ${escapeHtml(formatDate(invoice.date))}</p>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div>
+      <div class="blue">Facturer à</div>
+      <p><b>${escapeHtml(invoice.client.name || "-")}</b><br>
+      ${escapeHtml(invoice.client.address || "").replaceAll("\\n", "<br>")}<br>
+      ${escapeHtml(invoice.client.email || "")}</p>
+    </div>
+    <div>
+      <div class="blue">Conditions</div>
+      <p><b>Réf client :</b> ${escapeHtml(invoice.clientRef || "-")}<br>
+      <b>Bon de commande :</b> ${escapeHtml(invoice.purchaseOrder || "-")}<br>
+      <b>Paiement :</b> ${escapeHtml(invoice.paymentTerms || "-")}<br>
+      <b>TVA :</b> ${escapeHtml(COMPANY.vat)}</p>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>Description</th><th style="text-align:right">Qté</th><th style="text-align:right">Prix HT</th><th style="text-align:right">Montant HT</th></tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+
+  <div class="total">
+    <div class="line"><span>Sous-total HT</span><b>${money(invoice.subtotal)}</b></div>
+    <div class="line"><span>TVA ${escapeHtml(String(invoice.vatRate))}%</span><b>${money(invoice.vat)}</b></div>
+    <div class="line big"><span>Total</span><span>${money(invoice.total)}</span></div>
+  </div>
+
+  <div class="bank">
+    <b>Détails bancaires</b><br>
+    IBAN : ${escapeHtml(COMPANY.iban)}<br>
+    BIC : ${escapeHtml(COMPANY.bic)}
+  </div>
+</body>
+</html>`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+async function saveInvoiceAsDocument(invoice, cra, invoiceRowId, title) {
+  const ownerId = cra.client_id;
+  if (!ownerId) throw new Error("La facture doit être rattachée à un client. Sélectionne un client sur le CRA.");
+
+  const cleanTitle = title?.trim() || defaultInvoiceDocumentTitle(cra);
+  const safeTitle = cleanTitle.replace(/[^a-zA-Z0-9À-ÿ ._\-]/g, "_");
+  const fileName = `${safeTitle}-${invoiceRowId}.html`;
+  const path = `${ownerId}/${Date.now()}-${fileName}`;
+  const blob = new Blob([invoiceHtmlDocument(invoice)], { type: "text/html;charset=utf-8" });
+
+  const uploadResult = await supabase.storage.from(BUCKET).upload(path, blob, {
+    contentType: "text/html;charset=utf-8",
+    upsert: true,
+  });
+  if (uploadResult.error) throw uploadResult.error;
+
+  const insertResult = await supabase.from("documents").insert({
+    owner_id: ownerId,
+    title: cleanTitle,
+    document_type: "facture",
+    file_path: path,
+  });
+  if (insertResult.error) throw insertResult.error;
+}
+
+function defaultInvoiceDocumentTitle(cra) {
+  const month = formatMonth(cra.month);
+  const consultant = cra.consultant?.full_name || cra.consultant?.email || "consultant";
+  return `Facture ${month} ${consultant}`;
+}
+
 
 function InvoicePreview({ invoice }) {
   if (!invoice) return <Panel title="Aperçu facture" subtitle="Sélectionne un CRA validé." />;
@@ -863,7 +1090,7 @@ function InvoicePreview({ invoice }) {
           <h3 className="bg-blue-700 px-3 py-2 text-sm font-bold uppercase text-white">Conditions</h3>
           <div className="p-3 text-sm">
             <p><b>Réf client :</b> {invoice.clientRef || "-"}</p>
-            <p><b>Commande :</b> {invoice.supplierOrder || "-"}</p>
+            <p><b>Bon de commande :</b> {invoice.purchaseOrder || "-"}</p>
             <p><b>Paiement :</b> {invoice.paymentTerms}</p>
             <p><b>TVA :</b> {COMPANY.vat}</p>
           </div>
@@ -920,7 +1147,6 @@ function makeInvoice(cra, form) {
   ];
 
   if (extraHours > 0) lines.push({ description: "Heures supplémentaires", quantity: extraHours, unitPrice: extraRate, amount: extraHours * extraRate });
-  if (saturdayDays > 0) lines.push({ description: "Samedi travaillé", quantity: saturdayDays, unitPrice: saturdayRate, amount: saturdayDays * saturdayRate });
 
   const subtotal = lines.reduce((sum, line) => sum + line.amount, 0);
   const vat = subtotal * vatRate / 100;
@@ -931,7 +1157,7 @@ function makeInvoice(cra, form) {
     date: form.date,
     client: { name: form.clientName, address: form.clientAddress, email: form.clientEmail },
     clientRef: form.clientRef,
-    supplierOrder: form.supplierOrder,
+    purchaseOrder: form.purchaseOrder,
     paymentTerms: form.paymentTerms,
     vatRate,
     lines,
