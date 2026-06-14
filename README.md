@@ -1,28 +1,19 @@
-# LRN PORTAGE APP V2
+# LRN PORTAGE APP V3 - Documents
 
-Application connectée LRN PORTAGE.
+## Nouveautés
 
-## Nouveautés V2
+- Module documents fonctionnel
+- Dépôt de fichiers dans Supabase Storage
+- Choix du propriétaire côté admin
+- Liste des documents
+- Ouverture via URL signée
+- Admin voit tous les documents
+- Consultant/client voit ses documents
 
-- dashboard admin amélioré
-- gestion des profils
-- filtres consultants / clients / admin
-- changement de rôle depuis l'interface admin
-- compteurs dynamiques
+## À faire après upload GitHub
 
-## Important Supabase
-
-Après avoir déployé cette V2, exécuter dans Supabase > SQL Editor :
-
-`supabase-admin-policies.sql`
-
-Cela permet à l'administrateur de voir et gérer les profils.
-
-## Vercel
-
-Variables nécessaires :
-
-```bash
-VITE_SUPABASE_URL=...
-VITE_SUPABASE_ANON_KEY=...
-```
+1. Remplacer `src/App.jsx`
+2. Ajouter `supabase-documents.sql` à la racine
+3. Commit changes
+4. Vercel redéploie
+5. Dans Supabase > SQL Editor, exécuter `supabase-documents.sql`

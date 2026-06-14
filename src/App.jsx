@@ -5,10 +5,20 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
+const DOCUMENT_BUCKET = "documents";
+
 const roleLabels = {
   admin: "Administrateur",
   consultant: "Consultant",
   client: "Entreprise / Client",
+};
+
+const docTypeLabels = {
+  contrat: "Contrat",
+  fiche_paie: "Fiche de paie",
+  justificatif: "Justificatif",
+  cra: "CRA",
+  autre: "Autre",
 };
 
 export default function App() {
@@ -212,11 +222,14 @@ function Dashboard({ session, profile, message, signOut }) {
 function AdminDashboard({ session, profile, message, signOut }) {
   const [activeTab, setActiveTab] = useState("overview");
   const [profiles, setProfiles] = useState([]);
+  const [documents, setDocuments] = useState([]);
   const [loadingProfiles, setLoadingProfiles] = useState(false);
+  const [loadingDocuments, setLoadingDocuments] = useState(false);
   const [adminMessage, setAdminMessage] = useState("");
 
   useEffect(() => {
     loadProfiles();
+    loadDocuments();
   }, []);
 
   async function loadProfiles() {
@@ -229,13 +242,32 @@ function AdminDashboard({ session, profile, message, signOut }) {
       .order("created_at", { ascending: false });
 
     if (error) {
-      setAdminMessage("Impossible de charger les profils. Lance le script supabase-admin-policies.sql dans Supabase.");
+      setAdminMessage("Impossible de charger les profils. Lance le script supabase-admin-policies.sql.");
       setLoadingProfiles(false);
       return;
     }
 
     setProfiles(data || []);
     setLoadingProfiles(false);
+  }
+
+  async function loadDocuments() {
+    setLoadingDocuments(true);
+    setAdminMessage("");
+
+    const { data, error } = await supabase
+      .from("documents")
+      .select("id,owner_id,title,file_path,document_type,created_at,profiles:owner_id(email,full_name,role)")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      setAdminMessage("Impossible de charger les documents. Lance le script supabase-documents.sql.");
+      setLoadingDocuments(false);
+      return;
+    }
+
+    setDocuments(data || []);
+    setLoadingDocuments(false);
   }
 
   async function updateRole(id, newRole) {
@@ -258,24 +290,26 @@ function AdminDashboard({ session, profile, message, signOut }) {
       clients: profiles.filter((p) => p.role === "client").length,
       admins: profiles.filter((p) => p.role === "admin").length,
       total: profiles.length,
+      documents: documents.length,
     };
-  }, [profiles]);
+  }, [profiles, documents]);
 
   return (
     <div className="min-h-screen bg-slate-50">
       <Header signOut={signOut} />
 
       <main className="mx-auto max-w-7xl px-4 py-10 md:px-6">
-        {message && <Alert type="warning">{message}</Alert>}
-        {adminMessage && <Alert type="warning">{adminMessage}</Alert>}
+        {message && <Alert>{message}</Alert>}
+        {adminMessage && <Alert>{adminMessage}</Alert>}
 
         <Hero role="Administrateur" title={`Bonjour, ${profile?.full_name || session.user.email}`} />
 
-        <div className="mt-8 grid gap-5 md:grid-cols-4">
+        <div className="mt-8 grid gap-5 md:grid-cols-5">
           <StatCard title="Utilisateurs" value={stats.total} text="Tous les comptes créés" />
           <StatCard title="Consultants" value={stats.consultants} text="Profils consultants" />
           <StatCard title="Clients" value={stats.clients} text="Comptes entreprises" />
           <StatCard title="Admins" value={stats.admins} text="Administrateurs" />
+          <StatCard title="Documents" value={stats.documents} text="Documents déposés" />
         </div>
 
         <div className="mt-8 flex flex-wrap gap-3">
@@ -289,9 +323,9 @@ function AdminDashboard({ session, profile, message, signOut }) {
           <section className="mt-6 grid gap-6 md:grid-cols-2">
             <Panel title="Actions rapides">
               <ActionButton label="Gérer les profils" onClick={() => setActiveTab("profiles")} />
-              <ActionButton label="Préparer module documents" onClick={() => setActiveTab("documents")} />
+              <ActionButton label="Déposer / gérer les documents" onClick={() => setActiveTab("documents")} />
               <ActionButton label="Préparer module CRA" onClick={() => setActiveTab("cra")} />
-              <ActionButton label="Rafraîchir les données" onClick={loadProfiles} />
+              <ActionButton label="Rafraîchir les données" onClick={() => { loadProfiles(); loadDocuments(); }} />
             </Panel>
 
             <Panel title="Informations admin">
@@ -312,9 +346,13 @@ function AdminDashboard({ session, profile, message, signOut }) {
         )}
 
         {activeTab === "documents" && (
-          <ComingSoon
-            title="Module documents"
-            text="Prochaine étape : dépôt de contrats, fiches de paie, justificatifs et documents par utilisateur."
+          <DocumentsManager
+            currentProfile={profile}
+            isAdmin
+            profiles={profiles}
+            documents={documents}
+            loading={loadingDocuments}
+            onRefresh={loadDocuments}
           />
         )}
 
@@ -400,20 +438,270 @@ function ProfilesManager({ profiles, loading, onRefresh, onUpdateRole }) {
   );
 }
 
+function DocumentsManager({ currentProfile, isAdmin, profiles = [], documents, loading, onRefresh }) {
+  const [form, setForm] = useState({
+    ownerId: currentProfile?.id || "",
+    title: "",
+    documentType: "contrat",
+    file: null,
+  });
+  const [uploading, setUploading] = useState(false);
+  const [docMessage, setDocMessage] = useState("");
+  const [filter, setFilter] = useState("all");
+
+  useEffect(() => {
+    if (!form.ownerId && currentProfile?.id) {
+      setForm((prev) => ({ ...prev, ownerId: currentProfile.id }));
+    }
+  }, [currentProfile]);
+
+  async function uploadDocument(e) {
+    e.preventDefault();
+    setUploading(true);
+    setDocMessage("");
+
+    try {
+      const ownerId = isAdmin ? form.ownerId : currentProfile.id;
+      if (!ownerId) throw new Error("Aucun propriétaire sélectionné.");
+      if (!form.file) throw new Error("Sélectionne un fichier.");
+      if (!form.title.trim()) throw new Error("Ajoute un titre.");
+
+      const safeFileName = form.file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+      const filePath = `${ownerId}/${Date.now()}-${safeFileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from(DOCUMENT_BUCKET)
+        .upload(filePath, form.file, { upsert: false });
+
+      if (uploadError) throw uploadError;
+
+      const { error: insertError } = await supabase
+        .from("documents")
+        .insert({
+          owner_id: ownerId,
+          title: form.title.trim(),
+          document_type: form.documentType,
+          file_path: filePath,
+        });
+
+      if (insertError) throw insertError;
+
+      setDocMessage("Document déposé avec succès.");
+      setForm({ ownerId, title: "", documentType: "contrat", file: null });
+      const fileInput = document.getElementById("document-file-input");
+      if (fileInput) fileInput.value = "";
+      await onRefresh();
+    } catch (error) {
+      setDocMessage(error.message || "Erreur pendant le dépôt du document.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  const visibleDocuments = documents.filter((doc) => {
+    if (filter === "all") return true;
+    return doc.document_type === filter;
+  });
+
+  return (
+    <section className="mt-6 grid gap-6 lg:grid-cols-[420px_1fr]">
+      <div className="rounded-[2rem] bg-white p-6 shadow-sm">
+        <h2 className="text-2xl font-black text-slate-950">Déposer un document</h2>
+        <p className="mt-2 text-sm text-slate-600">
+          Ajoute un contrat, une fiche de paie, un CRA ou un justificatif.
+        </p>
+
+        <form className="mt-6 space-y-4" onSubmit={uploadDocument}>
+          {isAdmin && (
+            <label className="block">
+              <span className="mb-2 block text-sm font-semibold text-slate-700">Propriétaire</span>
+              <select
+                value={form.ownerId}
+                onChange={(e) => setForm({ ...form, ownerId: e.target.value })}
+                className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700"
+              >
+                <option value="">Sélectionner un utilisateur</option>
+                {profiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {(profile.full_name || profile.email)} — {roleLabels[profile.role] || profile.role}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          <Input label="Titre du document" value={form.title} onChange={(v) => setForm({ ...form, title: v })} />
+
+          <label className="block">
+            <span className="mb-2 block text-sm font-semibold text-slate-700">Type de document</span>
+            <select
+              value={form.documentType}
+              onChange={(e) => setForm({ ...form, documentType: e.target.value })}
+              className="w-full rounded-2xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-700"
+            >
+              <option value="contrat">Contrat</option>
+              <option value="fiche_paie">Fiche de paie</option>
+              <option value="justificatif">Justificatif</option>
+              <option value="cra">CRA</option>
+              <option value="autre">Autre</option>
+            </select>
+          </label>
+
+          <label className="block">
+            <span className="mb-2 block text-sm font-semibold text-slate-700">Fichier</span>
+            <input
+              id="document-file-input"
+              type="file"
+              accept=".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx,.xls,.xlsx"
+              onChange={(e) => setForm({ ...form, file: e.target.files?.[0] || null })}
+              className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-blue-700"
+            />
+          </label>
+
+          {docMessage && <Alert>{docMessage}</Alert>}
+
+          <button
+            disabled={uploading}
+            className="min-h-12 w-full rounded-full bg-blue-700 px-6 py-3 font-semibold text-white hover:bg-blue-800 disabled:opacity-60"
+          >
+            {uploading ? "Dépôt en cours..." : "Déposer le document"}
+          </button>
+        </form>
+      </div>
+
+      <div className="rounded-[2rem] bg-white p-6 shadow-sm">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-2xl font-black text-slate-950">Documents</h2>
+            <p className="mt-2 text-sm text-slate-600">
+              Consulte et ouvre les documents déposés.
+            </p>
+          </div>
+
+          <button
+            onClick={onRefresh}
+            className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800"
+          >
+            Rafraîchir
+          </button>
+        </div>
+
+        <div className="mt-6 flex flex-wrap gap-3">
+          <TabButton active={filter === "all"} onClick={() => setFilter("all")}>Tous</TabButton>
+          <TabButton active={filter === "contrat"} onClick={() => setFilter("contrat")}>Contrats</TabButton>
+          <TabButton active={filter === "fiche_paie"} onClick={() => setFilter("fiche_paie")}>Fiches de paie</TabButton>
+          <TabButton active={filter === "justificatif"} onClick={() => setFilter("justificatif")}>Justificatifs</TabButton>
+          <TabButton active={filter === "cra"} onClick={() => setFilter("cra")}>CRA</TabButton>
+        </div>
+
+        <div className="mt-6 overflow-hidden rounded-3xl border border-slate-100">
+          <div className="hidden grid-cols-5 bg-slate-50 px-5 py-4 text-xs font-bold uppercase tracking-wide text-slate-500 md:grid">
+            <span>Titre</span>
+            <span>Type</span>
+            <span>Propriétaire</span>
+            <span>Date</span>
+            <span>Action</span>
+          </div>
+
+          {loading ? (
+            <div className="p-6 text-slate-600">Chargement des documents...</div>
+          ) : visibleDocuments.length === 0 ? (
+            <div className="p-6 text-slate-600">Aucun document trouvé.</div>
+          ) : (
+            visibleDocuments.map((doc) => (
+              <DocumentRow key={doc.id} doc={doc} />
+            ))
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function DocumentRow({ doc }) {
+  const [opening, setOpening] = useState(false);
+  const ownerName = doc.profiles?.full_name || doc.profiles?.email || "Utilisateur";
+
+  async function openDocument() {
+    setOpening(true);
+
+    const { data, error } = await supabase.storage
+      .from(DOCUMENT_BUCKET)
+      .createSignedUrl(doc.file_path, 60);
+
+    setOpening(false);
+
+    if (error) {
+      alert("Impossible d’ouvrir le document. Vérifie les droits Storage.");
+      return;
+    }
+
+    window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+  }
+
+  return (
+    <div className="grid gap-3 border-t border-slate-100 px-5 py-4 md:grid-cols-5 md:items-center">
+      <div>
+        <p className="font-bold text-slate-950">{doc.title}</p>
+        <p className="text-xs text-slate-500 md:hidden">{docTypeLabels[doc.document_type] || doc.document_type}</p>
+      </div>
+      <p className="text-sm text-slate-700">{docTypeLabels[doc.document_type] || doc.document_type}</p>
+      <p className="text-sm text-slate-700">{ownerName}</p>
+      <p className="text-xs text-slate-500">{formatDate(doc.created_at)}</p>
+      <button
+        onClick={openDocument}
+        disabled={opening}
+        className="w-fit rounded-full bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-60"
+      >
+        {opening ? "Ouverture..." : "Ouvrir"}
+      </button>
+    </div>
+  );
+}
+
 function UserDashboard({ session, profile, message, signOut }) {
   const role = profile?.role || "consultant";
+  const [activeTab, setActiveTab] = useState("overview");
+  const [documents, setDocuments] = useState([]);
+  const [loadingDocuments, setLoadingDocuments] = useState(false);
+  const [userMessage, setUserMessage] = useState("");
+
+  useEffect(() => {
+    loadDocuments();
+  }, [profile]);
+
+  async function loadDocuments() {
+    if (!profile?.id) return;
+    setLoadingDocuments(true);
+    setUserMessage("");
+
+    const { data, error } = await supabase
+      .from("documents")
+      .select("id,owner_id,title,file_path,document_type,created_at")
+      .eq("owner_id", profile.id)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      setUserMessage("Impossible de charger les documents. Vérifie le script supabase-documents.sql.");
+      setLoadingDocuments(false);
+      return;
+    }
+
+    setDocuments(data || []);
+    setLoadingDocuments(false);
+  }
 
   const cards = role === "client"
     ? [
         ["Consultants", "0", "Voir les profils affectés"],
         ["CRA en attente", "0", "Valider l’activité mensuelle"],
-        ["Factures", "0", "Suivre les documents de facturation"],
+        ["Documents", documents.length, "Contrats et factures"],
         ["Demandes", "0", "Demander un renfort opérationnel"],
       ]
     : [
         ["Mission active", "À définir", "Consulter les informations de mission"],
         ["CRA du mois", "À remplir", "Déclarer les jours travaillés"],
-        ["Documents", "0", "Contrats, fiches de paie et justificatifs"],
+        ["Documents", documents.length, "Contrats, fiches de paie et justificatifs"],
         ["Frais", "À saisir", "IK, paniers repas et téléphone"],
       ];
 
@@ -422,7 +710,8 @@ function UserDashboard({ session, profile, message, signOut }) {
       <Header signOut={signOut} />
 
       <main className="mx-auto max-w-7xl px-4 py-10 md:px-6">
-        {message && <Alert type="warning">{message}</Alert>}
+        {message && <Alert>{message}</Alert>}
+        {userMessage && <Alert>{userMessage}</Alert>}
 
         <Hero role={roleLabels[role] || "Utilisateur"} title={`Bonjour, ${profile?.full_name || session.user.email}`} />
 
@@ -432,20 +721,46 @@ function UserDashboard({ session, profile, message, signOut }) {
           ))}
         </section>
 
-        <section className="mt-8 grid gap-6 md:grid-cols-2">
-          <Panel title="Actions rapides">
-            <ActionButton label="Déposer un document" />
-            <ActionButton label="Remplir un CRA" />
-            <ActionButton label="Déclarer des frais" />
-            <ActionButton label="Contacter LRN PORTAGE" />
-          </Panel>
+        <div className="mt-8 flex flex-wrap gap-3">
+          <TabButton active={activeTab === "overview"} onClick={() => setActiveTab("overview")}>Vue générale</TabButton>
+          <TabButton active={activeTab === "documents"} onClick={() => setActiveTab("documents")}>Mes documents</TabButton>
+          <TabButton active={activeTab === "cra"} onClick={() => setActiveTab("cra")}>CRA</TabButton>
+          <TabButton active={activeTab === "frais"} onClick={() => setActiveTab("frais")}>Frais</TabButton>
+        </div>
 
-          <Panel title="Informations du compte">
-            <InfoLine label="Email" value={session.user.email} />
-            <InfoLine label="Rôle" value={roleLabels[role] || role} />
-            <InfoLine label="ID utilisateur" value={session.user.id} />
-          </Panel>
-        </section>
+        {activeTab === "overview" && (
+          <section className="mt-8 grid gap-6 md:grid-cols-2">
+            <Panel title="Actions rapides">
+              <ActionButton label="Voir mes documents" onClick={() => setActiveTab("documents")} />
+              <ActionButton label="Remplir un CRA" onClick={() => setActiveTab("cra")} />
+              <ActionButton label="Déclarer des frais" onClick={() => setActiveTab("frais")} />
+              <ActionButton label="Contacter LRN PORTAGE" />
+            </Panel>
+
+            <Panel title="Informations du compte">
+              <InfoLine label="Email" value={session.user.email} />
+              <InfoLine label="Rôle" value={roleLabels[role] || role} />
+              <InfoLine label="ID utilisateur" value={session.user.id} />
+            </Panel>
+          </section>
+        )}
+
+        {activeTab === "documents" && (
+          <DocumentsManager
+            currentProfile={profile}
+            documents={documents}
+            loading={loadingDocuments}
+            onRefresh={loadDocuments}
+          />
+        )}
+
+        {activeTab === "cra" && (
+          <ComingSoon title="Module CRA" text="Prochaine étape : formulaire CRA mensuel, brouillon, soumission et validation." />
+        )}
+
+        {activeTab === "frais" && (
+          <ComingSoon title="Module frais" text="Prochaine étape : déclaration IK, paniers repas, téléphone et justificatifs." />
+        )}
       </main>
     </div>
   );
@@ -597,4 +912,12 @@ function Input({ label, value, onChange, type = "text" }) {
       />
     </label>
   );
+}
+
+function formatDate(dateValue) {
+  if (!dateValue) return "-";
+  return new Intl.DateTimeFormat("fr-FR", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(new Date(dateValue));
 }
